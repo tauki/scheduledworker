@@ -4,8 +4,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/require"
 )
 
 func TestScheduledWorker(t *testing.T) {
@@ -43,5 +41,7 @@ func TestScheduledWorker(t *testing.T) {
 	})
 
 	scheduler.Stop()
-	require.Equal(t, 3, workDone)
+	if workDone != 3 {
+		t.Errorf("expected: %d, got: %d", 3, workDone)
+	}
 }
