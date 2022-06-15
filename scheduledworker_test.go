@@ -45,3 +45,30 @@ func TestScheduledWorker(t *testing.T) {
 		t.Errorf("expected: %d, got: %d", 3, workDone)
 	}
 }
+
+func TestScheduledWorker_Recursion(t *testing.T) {
+	scheduler := New().SetDuration(time.Second).Start()
+	var f1 func()
+	f1 = func() {
+		scheduler.Submit(Task{
+			At: time.Now(),
+			Fn: func() {
+				t.Errorf("recursion detected after closing scheduler")
+			},
+		})
+	}
+
+	scheduler.Submit(Task{
+		At: time.Now(),
+		Fn: func() {
+			scheduler.Submit(Task{
+				At: time.Now(),
+				Fn: func() {
+					f1()
+				},
+			})
+		},
+	})
+
+	scheduler.Stop()
+}
