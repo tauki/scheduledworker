@@ -12,4 +12,4 @@
   </picture>
 </p>
 
-![main](https://github.com/tauki/scheduledworker/actions/workflows/main.yaml/badge.svg?branch=main)
+![main](https://github.com/tauki/scheduledworker/actions/workflows/main.yaml/badge.svg)
