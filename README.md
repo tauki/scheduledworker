@@ -11,3 +11,5 @@
          height="250" width="250">
   </picture>
 </p>
+
+![main](https://github.com/tauki/scheduledworker/actions/workflows/main.yaml/badge.svg?branch=main)
