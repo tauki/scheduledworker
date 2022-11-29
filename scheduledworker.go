@@ -147,6 +147,9 @@ func (w *worker) process(tasks []Task) {
 			wg.Add(1)
 			go func(fn func()) {
 				defer wg.Done()
+				defer func() {
+					recover()
+				}()
 				fn()
 			}(tasks[count].Fn)
 			w.postProcess(tasks[count])

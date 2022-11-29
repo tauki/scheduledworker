@@ -72,3 +72,26 @@ func TestScheduledWorker_Recursion(t *testing.T) {
 
 	scheduler.Stop()
 }
+
+func TestScheduledWorker_panic(t *testing.T) {
+	scheduler := New().SetDuration(time.Nanosecond).Start()
+
+	workDone := 0
+	tc := make(chan bool, 2)
+
+	scheduler.Submit(Task{
+		At: time.Now(),
+		Fn: func() {
+			workDone++
+			tc <- true
+			panic("should be recovered")
+		},
+	}, Repeat(2))
+
+	<-tc
+	<-tc
+	scheduler.Stop()
+	if workDone != 2 {
+		t.Errorf("expected: %d, got: %d", 1, workDone)
+	}
+}
