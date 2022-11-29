@@ -46,9 +46,6 @@ func New() Worker {
 }
 
 func (w *worker) Submit(task Task, opts ...TaskOpt) {
-	w.Lock()
-	defer w.Unlock()
-
 	opt := new(taskOpt)
 	for _, fn := range opts {
 		fn(opt)
@@ -103,6 +100,9 @@ func (w *worker) insertTask(task Task) {
 	if w.closed {
 		return
 	}
+
+	w.Lock()
+	defer w.Unlock()
 
 	i := 0
 	for ; i < len(w.tasks); i++ {
