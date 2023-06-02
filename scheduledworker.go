@@ -25,10 +25,11 @@ type Task struct {
 
 type worker struct {
 	maxWorker int
-	tasks     []Task
-	close     chan bool
-	closed    bool
-	ticker    *time.Ticker
+	//tasks     []Task
+	queue  PriorityQueue
+	close  chan bool
+	closed bool
+	ticker *time.Ticker
 	sync.Mutex
 	sync.Once
 }
@@ -37,7 +38,8 @@ var _ Worker = &worker{}
 
 func New() Worker {
 	return &worker{
-		tasks:     make([]Task, 0),
+		//tasks:     make([]Task, 0),
+		queue:     make(PriorityQueue, 0),
 		close:     make(chan bool),
 		maxWorker: 10,
 		closed:    false,
@@ -63,25 +65,24 @@ func (w *worker) Submit(task Task, opts ...TaskOpt) {
 }
 
 func (w *worker) Start() Worker {
-
-	w.Do(func() {
-		go func() {
-			for {
-				select {
-				case <-w.close:
-					w.closed = true
-				case <-w.ticker.C:
-					w.process(w.getTasks())
-					if w.closed && len(w.tasks) == 0 {
-						w.ticker.Stop()
-						w.close <- true
-						return
-					}
-				}
-			}
-		}()
-	})
+	w.Do(func() { go w.run() })
 	return w
+}
+
+func (w *worker) run() {
+	for {
+		select {
+		case <-w.close:
+			w.closed = true
+		case <-w.ticker.C:
+			w.process(w.getTasks())
+			if w.closed && w.queue.Len() == 0 {
+				w.ticker.Stop()
+				w.close <- true
+				return
+			}
+		}
+	}
 }
 
 func (w *worker) SetDuration(duration time.Duration) Worker {
@@ -104,38 +105,24 @@ func (w *worker) insertTask(task Task) {
 	w.Lock()
 	defer w.Unlock()
 
-	i := 0
-	for ; i < len(w.tasks); i++ {
-		if w.tasks[i].At.After(task.At) {
-			break
-		}
-	}
-
-	if i == len(w.tasks) {
-		w.tasks = append(w.tasks, task)
-	} else {
-		w.tasks = append(w.tasks[:i+1], w.tasks[i:]...)
-		w.tasks[i] = task
-	}
+	w.queue.Push(&Item{
+		task:     task,
+		priority: task.At,
+	})
 }
 
 func (w *worker) getTasks() []Task {
 	tasks := make([]Task, 0)
-	count := 0
 	w.Lock()
 	defer w.Unlock()
 
-	for i := 0; i < len(w.tasks); i++ {
-		if time.Now().After(w.tasks[i].At) {
-			count++
-			continue
+	for w.queue.Peek() != nil && time.Now().After(w.queue.Peek().priority) {
+		item := w.queue.Pop().(*Item)
+		if item == nil {
+			break
 		}
-
-		break
+		tasks = append(tasks, item.task)
 	}
-
-	tasks = append(tasks, w.tasks[:count]...)
-	w.tasks = w.tasks[count:]
 	return tasks
 }
 
