@@ -8,7 +8,6 @@ import (
 type Item struct {
 	task     Task
 	priority time.Time
-	index    int // needed for container/heap functions
 }
 
 type PriorityQueue []*Item
@@ -21,8 +20,6 @@ func (pq *PriorityQueue) Less(i, j int) bool {
 
 func (pq *PriorityQueue) Swap(i, j int) {
 	(*pq)[i], (*pq)[j] = (*pq)[j], (*pq)[i]
-	(*pq)[i].index = i
-	(*pq)[j].index = j
 }
 
 func (pq *PriorityQueue) PushItem(x *Item) {
