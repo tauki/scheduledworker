@@ -105,7 +105,7 @@ func (w *worker) insertTask(task Task) {
 	w.Lock()
 	defer w.Unlock()
 
-	w.queue.Push(&Item{
+	w.queue.PushItem(&Item{
 		task:     task,
 		priority: task.At,
 	})
@@ -117,7 +117,7 @@ func (w *worker) getTasks() []Task {
 	defer w.Unlock()
 
 	for w.queue.Peek() != nil && time.Now().After(w.queue.Peek().priority) {
-		item := w.queue.Pop().(*Item)
+		item := w.queue.PopItem()
 		if item == nil {
 			break
 		}
