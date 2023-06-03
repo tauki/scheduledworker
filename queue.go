@@ -5,48 +5,69 @@ import (
 	"time"
 )
 
+type Queue interface {
+	Push(*Item)
+	Pop() *Item
+	Len() int
+	Peek() *Item
+}
+
 type Item struct {
 	task     Task
 	priority time.Time
 }
 
-type PriorityQueue []*Item
+type items []*Item
 
-func (pq *PriorityQueue) Len() int { return len(*pq) }
+type PriorityQueue struct {
+	queue items
+}
 
-func (pq *PriorityQueue) Less(i, j int) bool {
+func NewPriorityQueue() *PriorityQueue {
+	q := make(items, 0)
+	heap.Init(&q)
+	return &PriorityQueue{queue: q}
+}
+
+func (pq *PriorityQueue) Push(x *Item) {
+	heap.Push(&pq.queue, x)
+}
+
+func (pq *PriorityQueue) Pop() *Item {
+	return heap.Pop(&pq.queue).(*Item)
+}
+
+func (pq *PriorityQueue) Peek() *Item {
+	if len(pq.queue) == 0 {
+		return nil
+	}
+	return (pq.queue)[0]
+}
+
+func (pq *PriorityQueue) Len() int {
+	return pq.queue.Len()
+}
+
+func (pq *items) Len() int { return len(*pq) }
+
+func (pq *items) Less(i, j int) bool {
 	return (*pq)[i].priority.Before((*pq)[j].priority)
 }
 
-func (pq *PriorityQueue) Swap(i, j int) {
+func (pq *items) Swap(i, j int) {
 	(*pq)[i], (*pq)[j] = (*pq)[j], (*pq)[i]
 }
 
-func (pq *PriorityQueue) PushItem(x *Item) {
-	heap.Push(pq, x)
-}
-
-func (pq *PriorityQueue) PopItem() *Item {
-	return heap.Pop(pq).(*Item)
-}
-
-func (pq *PriorityQueue) Push(x interface{}) {
+func (pq *items) Push(x interface{}) {
 	item := x.(*Item)
 	*pq = append(*pq, item)
 }
 
-func (pq *PriorityQueue) Pop() interface{} {
+func (pq *items) Pop() interface{} {
 	old := *pq
 	n := len(old)
 	item := old[n-1]
-	old[n-1] = nil // avoid memory leak
+	old[n-1] = nil
 	*pq = old[:n-1]
 	return item
-}
-
-func (pq *PriorityQueue) Peek() *Item {
-	if len(*pq) == 0 {
-		return nil
-	}
-	return (*pq)[0]
 }

@@ -7,12 +7,14 @@ import (
 
 const (
 	defaultScheduleDuration = time.Second * 30
+	defaultMaxWorker        = 10
 )
 
 type Worker interface {
 	Submit(Task, ...TaskOpt)
 	SetDuration(time.Duration) Worker
 	SetMaxWorker(int) Worker
+	SetQueue(Queue) Worker
 	Start() Worker
 	Stop()
 }
@@ -25,11 +27,10 @@ type Task struct {
 
 type worker struct {
 	maxWorker int
-	//tasks     []Task
-	queue  PriorityQueue
-	close  chan bool
-	closed bool
-	ticker *time.Ticker
+	queue     Queue
+	close     chan bool
+	closed    bool
+	ticker    *time.Ticker
 	sync.Mutex
 	sync.Once
 }
@@ -38,10 +39,9 @@ var _ Worker = &worker{}
 
 func New() Worker {
 	return &worker{
-		//tasks:     make([]Task, 0),
-		queue:     make(PriorityQueue, 0),
+		queue:     NewPriorityQueue(),
 		close:     make(chan bool),
-		maxWorker: 10,
+		maxWorker: defaultMaxWorker,
 		closed:    false,
 		ticker:    time.NewTicker(defaultScheduleDuration),
 	}
@@ -97,6 +97,17 @@ func (w *worker) SetMaxWorker(count int) Worker {
 	return w
 }
 
+func (w *worker) SetQueue(queue Queue) Worker {
+	w.Lock()
+	defer w.Unlock()
+	for w.queue.Len() > 0 {
+		item := w.queue.Pop()
+		queue.Push(item)
+	}
+	w.queue = queue
+	return w
+}
+
 func (w *worker) insertTask(task Task) {
 	if w.closed {
 		return
@@ -105,7 +116,7 @@ func (w *worker) insertTask(task Task) {
 	w.Lock()
 	defer w.Unlock()
 
-	w.queue.PushItem(&Item{
+	w.queue.Push(&Item{
 		task:     task,
 		priority: task.At,
 	})
@@ -117,7 +128,7 @@ func (w *worker) getTasks() []Task {
 	defer w.Unlock()
 
 	for w.queue.Peek() != nil && time.Now().After(w.queue.Peek().priority) {
-		item := w.queue.PopItem()
+		item := w.queue.Pop()
 		if item == nil {
 			break
 		}
