@@ -61,7 +61,7 @@ func (w *worker) Submit(task Task, opts ...TaskOpt) {
 		}
 	}
 
-	w.insertTask(task)
+	w.insertTask(&task)
 }
 
 func (w *worker) Start() Worker {
@@ -108,7 +108,7 @@ func (w *worker) SetQueue(queue Queue) Worker {
 	return w
 }
 
-func (w *worker) insertTask(task Task) {
+func (w *worker) insertTask(task *Task) {
 	if w.closed {
 		return
 	}
@@ -116,28 +116,25 @@ func (w *worker) insertTask(task Task) {
 	w.Lock()
 	defer w.Unlock()
 
-	w.queue.Push(&Item{
-		task:     task,
-		priority: task.At,
-	})
+	w.queue.Push(task)
 }
 
-func (w *worker) getTasks() []Task {
-	tasks := make([]Task, 0)
+func (w *worker) getTasks() []*Task {
+	tasks := make([]*Task, 0)
 	w.Lock()
 	defer w.Unlock()
 
-	for w.queue.Peek() != nil && time.Now().After(w.queue.Peek().priority) {
-		item := w.queue.Pop()
-		if item == nil {
+	for w.queue.Peek() != nil && time.Now().After(w.queue.Peek().At) {
+		task := w.queue.Pop()
+		if task == nil {
 			break
 		}
-		tasks = append(tasks, item.task)
+		tasks = append(tasks, task)
 	}
 	return tasks
 }
 
-func (w *worker) process(tasks []Task) {
+func (w *worker) process(tasks []*Task) {
 	wg := sync.WaitGroup{}
 	count := 0
 	for count < len(tasks) {
@@ -157,7 +154,7 @@ func (w *worker) process(tasks []Task) {
 	}
 }
 
-func (w *worker) postProcess(task Task) {
+func (w *worker) postProcess(task *Task) {
 	if task.opt.repeat != Forever && task.opt.repeat != 0 {
 		task.opt.repeat--
 	}
