@@ -55,7 +55,7 @@ func TestPriorityQueue(t *testing.T) {
 		l := pq.Len()
 		item := pq.Pop()
 		if item.At != newItem.At {
-			t.Errorf("item.priority = %v, want %v", item.At, time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
+			t.Errorf("item.priority = %v, want %v", item.At, newItem.At)
 		}
 		if pq.Len() != l-1 {
 			t.Errorf("pq.Len() = %d, want %d", pq.Len(), 3)
@@ -66,7 +66,7 @@ func TestPriorityQueue(t *testing.T) {
 		l := pq.Len()
 		item := pq.Peek()
 		if item.At != pq.queue[0].At {
-			t.Errorf("item.priority = %v, want %v", item.At, time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC))
+			t.Errorf("item.priority = %v, want %v", item.At, pq.queue[0].At)
 		}
 		if pq.Len() != l {
 			t.Errorf("pq.Len() = %d, want %d", pq.Len(), 3)
