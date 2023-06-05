@@ -38,7 +38,7 @@ func (pq *PriorityQueue) Peek() *Task {
 	if len(pq.queue) == 0 {
 		return nil
 	}
-	return (pq.queue)[0]
+	return pq.queue[0]
 }
 
 func (pq *PriorityQueue) Len() int {

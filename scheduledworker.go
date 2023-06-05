@@ -124,7 +124,8 @@ func (w *worker) getTasks() []*Task {
 	w.Lock()
 	defer w.Unlock()
 
-	for w.queue.Peek() != nil && time.Now().After(w.queue.Peek().At) {
+	currentTime := time.Now()
+	for w.queue.Peek() != nil && currentTime.After(w.queue.Peek().At) {
 		task := w.queue.Pop()
 		if task == nil {
 			break
