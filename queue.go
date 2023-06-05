@@ -17,6 +17,9 @@ type PriorityQueue struct {
 	queue queue
 }
 
+var _ Queue = &PriorityQueue{}
+var _ heap.Interface = &queue{}
+
 func NewPriorityQueue() *PriorityQueue {
 	q := make(queue, 0)
 	heap.Init(&q)
