@@ -7,12 +7,14 @@ import (
 
 const (
 	defaultScheduleDuration = time.Second * 30
+	defaultMaxWorker        = 10
 )
 
 type Worker interface {
 	Submit(Task, ...TaskOpt)
 	SetDuration(time.Duration) Worker
 	SetMaxWorker(int) Worker
+	SetQueue(Queue) Worker
 	Start() Worker
 	Stop()
 }
@@ -25,7 +27,7 @@ type Task struct {
 
 type worker struct {
 	maxWorker int
-	tasks     []Task
+	queue     Queue
 	close     chan bool
 	closed    bool
 	ticker    *time.Ticker
@@ -37,9 +39,9 @@ var _ Worker = &worker{}
 
 func New() Worker {
 	return &worker{
-		tasks:     make([]Task, 0),
+		queue:     NewPriorityQueue(),
 		close:     make(chan bool),
-		maxWorker: 10,
+		maxWorker: defaultMaxWorker,
 		closed:    false,
 		ticker:    time.NewTicker(defaultScheduleDuration),
 	}
@@ -59,29 +61,28 @@ func (w *worker) Submit(task Task, opts ...TaskOpt) {
 		}
 	}
 
-	w.insertTask(task)
+	w.insertTask(&task)
 }
 
 func (w *worker) Start() Worker {
-
-	w.Do(func() {
-		go func() {
-			for {
-				select {
-				case <-w.close:
-					w.closed = true
-				case <-w.ticker.C:
-					w.process(w.getTasks())
-					if w.closed && len(w.tasks) == 0 {
-						w.ticker.Stop()
-						w.close <- true
-						return
-					}
-				}
-			}
-		}()
-	})
+	w.Do(func() { go w.run() })
 	return w
+}
+
+func (w *worker) run() {
+	for {
+		select {
+		case <-w.close:
+			w.closed = true
+		case <-w.ticker.C:
+			w.process(w.getTasks())
+			if w.closed && w.queue.Len() == 0 {
+				w.ticker.Stop()
+				w.close <- true
+				return
+			}
+		}
+	}
 }
 
 func (w *worker) SetDuration(duration time.Duration) Worker {
@@ -96,7 +97,18 @@ func (w *worker) SetMaxWorker(count int) Worker {
 	return w
 }
 
-func (w *worker) insertTask(task Task) {
+func (w *worker) SetQueue(queue Queue) Worker {
+	w.Lock()
+	defer w.Unlock()
+	for w.queue.Len() > 0 {
+		item := w.queue.Pop()
+		queue.Push(item)
+	}
+	w.queue = queue
+	return w
+}
+
+func (w *worker) insertTask(task *Task) {
 	if w.closed {
 		return
 	}
@@ -104,42 +116,26 @@ func (w *worker) insertTask(task Task) {
 	w.Lock()
 	defer w.Unlock()
 
-	i := 0
-	for ; i < len(w.tasks); i++ {
-		if w.tasks[i].At.After(task.At) {
-			break
-		}
-	}
-
-	if i == len(w.tasks) {
-		w.tasks = append(w.tasks, task)
-	} else {
-		w.tasks = append(w.tasks[:i+1], w.tasks[i:]...)
-		w.tasks[i] = task
-	}
+	w.queue.Push(task)
 }
 
-func (w *worker) getTasks() []Task {
-	tasks := make([]Task, 0)
-	count := 0
+func (w *worker) getTasks() []*Task {
+	tasks := make([]*Task, 0)
 	w.Lock()
 	defer w.Unlock()
 
-	for i := 0; i < len(w.tasks); i++ {
-		if time.Now().After(w.tasks[i].At) {
-			count++
-			continue
+	currentTime := time.Now()
+	for w.queue.Peek() != nil && currentTime.After(w.queue.Peek().At) {
+		task := w.queue.Pop()
+		if task == nil {
+			break
 		}
-
-		break
+		tasks = append(tasks, task)
 	}
-
-	tasks = append(tasks, w.tasks[:count]...)
-	w.tasks = w.tasks[count:]
 	return tasks
 }
 
-func (w *worker) process(tasks []Task) {
+func (w *worker) process(tasks []*Task) {
 	wg := sync.WaitGroup{}
 	count := 0
 	for count < len(tasks) {
@@ -159,7 +155,7 @@ func (w *worker) process(tasks []Task) {
 	}
 }
 
-func (w *worker) postProcess(task Task) {
+func (w *worker) postProcess(task *Task) {
 	if task.opt.repeat != Forever && task.opt.repeat != 0 {
 		task.opt.repeat--
 	}
