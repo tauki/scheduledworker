@@ -13,6 +13,7 @@ No v1.0.0 tag or release has been published by this work.
 - Measure repeat intervals from function completion, including recovered panics. Apply Until to initial and subsequent scheduled times.
 - Correct zero-At first-run interval arithmetic and include tasks whose deadline equals now.
 - Handle empty priority queue Pop and replacement with the same queue safely.
+- Ignore queue replacements after Stop begins so prefilled queues cannot introduce new work during or after shutdown.
 
 ### Release scope and compatibility
 

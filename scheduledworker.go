@@ -212,7 +212,8 @@ func (w *worker) SetMaxWorker(count int) Worker {
 
 // SetQueue transfers queued work to queue. The worker must exclusively own it;
 // callers must not mutate it concurrently. A nil queue panics. Queue methods must
-// return promptly and must not call back into the worker.
+// return promptly and must not call back into the worker. Replacements after Stop
+// begins are ignored.
 func (w *worker) SetQueue(queue Queue) Worker {
 	if queue == nil {
 		panic("scheduledworker: queue must not be nil")
@@ -226,6 +227,9 @@ func (w *worker) SetQueue(queue Queue) Worker {
 	}
 	w.Lock()
 	defer w.Unlock()
+	if w.closed {
+		return w
+	}
 	// A fixed count also handles setting the existing queue without looping
 	// forever as each popped task is pushed back into the same queue.
 	for n := w.queue.Len(); n > 0; n-- {

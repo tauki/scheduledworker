@@ -144,6 +144,67 @@ func TestWorkerQueueReplacementPreservesTasks(t *testing.T) {
 	}
 }
 
+func TestWorkerQueueReplacementIgnoredDuringStop(t *testing.T) {
+	w := New().SetMaxWorker(1).Start().(*worker)
+	started, release, stopped := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var unblock sync.Once
+	defer w.Stop()
+	defer unblock.Do(func() { close(release) })
+	w.Submit(Task{Fn: func() { close(started); <-release }})
+	waitSignal(t, started)
+	var accepted, rejected atomic.Int64
+	w.Submit(Task{Fn: func() { accepted.Add(1) }})
+	w.Lock()
+	original := w.queue
+	w.Unlock()
+	go func() { w.Stop(); close(stopped) }()
+	waitFor(t, func() bool { w.Lock(); defer w.Unlock(); return w.closed })
+
+	replacement := NewPriorityQueue()
+	replacement.Push(&Task{Fn: func() { rejected.Add(1) }})
+	w.SetQueue(replacement)
+	w.Lock()
+	replaced := w.queue != original
+	w.Unlock()
+	if replaced {
+		t.Error("queue replaced while Stop was draining")
+	}
+	unblock.Do(func() { close(release) })
+	waitSignal(t, stopped)
+	if accepted.Load() != 1 || rejected.Load() != 0 {
+		t.Fatalf("executions: accepted=%d rejected=%d", accepted.Load(), rejected.Load())
+	}
+	if replacement.Len() != 1 {
+		t.Fatal("rejected replacement queue was modified")
+	}
+}
+
+func TestWorkerQueueReplacementIgnoredAfterStop(t *testing.T) {
+	for _, started := range []bool{false, true} {
+		name := "before Start"
+		if started {
+			name = "after Start"
+		}
+		t.Run(name, func(t *testing.T) {
+			w := New().(*worker)
+			if started {
+				w.Start()
+			}
+			w.Stop()
+			original := w.queue
+			replacement := NewPriorityQueue()
+			replacement.Push(&Task{Fn: func() { t.Error("task admitted after Stop") }})
+			w.SetQueue(replacement)
+			if w.queue != original || w.queue.Len() != 0 {
+				t.Error("stopped worker accepted a replacement queue")
+			}
+			if replacement.Len() != 1 {
+				t.Error("rejected replacement queue was modified")
+			}
+		})
+	}
+}
+
 func TestWorkerIncreasingLimitWakesDispatcher(t *testing.T) {
 	w := New().SetMaxWorker(1).Start()
 	started, release, second := make(chan struct{}), make(chan struct{}), make(chan struct{})

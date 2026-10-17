@@ -77,7 +77,7 @@ SetDuration retains the idle wake interval setting (positive durations only). Sc
 
 ## Custom queues
 
-SetQueue replaces the queued-task implementation and transfers pending tasks. The built-in priority queue orders by Task.At. Its empty Pop/Peek return nil. Installed queues belong exclusively to the worker: do not mutate them directly while it is running. Queue methods must be prompt, internally consistent, and must not call worker methods. Prefilled tasks without options execute once.
+SetQueue replaces the queued-task implementation and transfers pending tasks. Replacements after Stop begins are ignored. The built-in priority queue orders by Task.At. Its empty Pop/Peek return nil. Installed queues belong exclusively to the worker: do not mutate them directly while it is running. Queue methods must be prompt, internally consistent, and must not call worker methods. Prefilled tasks without options execute once.
 
 ## Examples and checks
 
