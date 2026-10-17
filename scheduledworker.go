@@ -1,6 +1,7 @@
 package scheduledworker
 
 import (
+	"context"
 	"reflect"
 	"sync"
 	"time"
@@ -16,19 +17,31 @@ const (
 // Stop must be called by the owner, not from a function running on this worker.
 type Worker interface {
 	Submit(Task, ...TaskOpt)
+	SubmitWithOptions(Task, ...Option) error
 	SetDuration(time.Duration) Worker
 	SetMaxWorker(int) Worker
 	SetQueue(Queue) Worker
 	Start() Worker
 	Stop()
+	StopCtx(context.Context, StopMode) error
+	Status() Status
+	AddQueueObserver(func(int))
 }
 
 // Task is a function and its earliest scheduled time. A zero At means now, or
-// one interval from now when Every is supplied. Fn must return for Stop to finish.
+// one interval from now when Every is supplied. Handlers must return for Stop to
+// finish. SubmitWithOptions requires exactly one handler; legacy Submit gives
+// FnErr precedence when both are supplied.
 type Task struct {
-	At  time.Time
-	Fn  func()
-	opt *taskOpt
+	At    time.Time
+	Fn    func()
+	FnErr func(context.Context) error
+	opt   *taskOpt
+	spec  *Spec
+	state *taskState
+	// dispatching is protected by the owning worker lock, including while the
+	// next occurrence is queued behind this invocation's completion observers.
+	dispatching bool
 }
 
 type worker struct {
@@ -41,6 +54,11 @@ type worker struct {
 	inFlight     int
 	wake         chan struct{}
 	done         chan struct{}
+	terminated   bool
+	keys         map[string]bool
+	active       map[*Task]activeTask
+	observers    []func(int)
+	stats        Status
 }
 
 var _ Worker = (*worker)(nil)
@@ -54,13 +72,15 @@ func New() Worker {
 		idleDuration: defaultScheduleDuration,
 		wake:         make(chan struct{}, 1),
 		done:         make(chan struct{}),
+		keys:         make(map[string]bool),
+		active:       make(map[*Task]activeTask),
 	}
 }
 
 // Submit registers a task. Nil functions and submissions after Stop are ignored.
 // Options apply left to right. An unlimited repeat requires a positive interval.
 func (w *worker) Submit(task Task, opts ...TaskOpt) {
-	if task.Fn == nil {
+	if task.Fn == nil && task.FnErr == nil {
 		return
 	}
 	opt := new(taskOpt)
@@ -73,18 +93,15 @@ func (w *worker) Submit(task Task, opts ...TaskOpt) {
 		panic("scheduledworker: unlimited repeat requires a positive interval")
 	}
 	task.opt = opt
+	task.spec, task.state = nil, nil
+	task.dispatching = false
 	if task.At.IsZero() {
 		task.At = time.Now().Add(opt.every)
 	}
 	if !opt.until.IsZero() && task.At.After(opt.until) {
 		return
 	}
-	w.Lock()
-	if !w.closed {
-		w.queue.Push(&task)
-	}
-	w.Unlock()
-	w.tryWake()
+	w.enqueue(&task)
 }
 
 // Start starts scheduling once. Repeated calls, including after Stop, are no-ops.
@@ -118,18 +135,25 @@ func (w *worker) run() {
 	for {
 		w.Lock()
 		if w.closed && w.queue.Len() == 0 && w.inFlight == 0 {
+			w.terminated = true
 			w.Unlock()
 			return
 		}
 		wait := w.idleDuration
 		saturated := w.inFlight >= w.maxWorker
-		if head := w.queue.Peek(); head != nil && !saturated {
-			wait = time.Until(head.At)
-			if wait <= 0 {
-				task := w.queue.Pop()
+		if !saturated {
+			task, delay, blocked := w.nextTask(time.Now())
+			wait, saturated = delay, blocked
+			if task != nil {
 				w.inFlight++
+				task.dispatching = true
+				if task.spec != nil && task.spec.Key != "" {
+					w.keys[task.spec.Key] = true
+				}
+				observers, length := w.queueObserversLocked()
 				w.Unlock()
 				go w.execute(task)
+				w.notifyQueue(observers, length)
 				continue
 			}
 		}
@@ -150,20 +174,6 @@ func (w *worker) run() {
 		case <-w.wake:
 		}
 	}
-}
-
-func (w *worker) execute(task *Task) {
-	defer func() {
-		// Preserve the legacy contract: a panic ends this invocation, while
-		// repeat accounting and slot cleanup still happen. No retry is implied.
-		_ = recover()
-		w.Lock()
-		w.reschedule(task)
-		w.inFlight--
-		w.Unlock()
-		w.tryWake()
-	}()
-	task.Fn()
 }
 
 // reschedule runs under the worker lock, after the function has returned/panicked.
@@ -226,8 +236,8 @@ func (w *worker) SetQueue(queue Queue) Worker {
 		}
 	}
 	w.Lock()
-	defer w.Unlock()
 	if w.closed {
+		w.Unlock()
 		return w
 	}
 	// A fixed count also handles setting the existing queue without looping
@@ -236,7 +246,10 @@ func (w *worker) SetQueue(queue Queue) Worker {
 		queue.Push(w.queue.Pop())
 	}
 	w.queue = queue
+	observers, length := w.queueObserversLocked()
+	w.Unlock()
 	w.tryWake()
+	w.notifyQueue(observers, length)
 	return w
 }
 
@@ -245,18 +258,7 @@ func (w *worker) SetQueue(queue Queue) Worker {
 // Before Start it discards queued tasks and returns without executing them.
 // A future task or nonreturning function can therefore make a draining Stop wait.
 func (w *worker) Stop() {
-	w.Lock()
-	if !w.closed {
-		w.closed = true
-		if !w.started {
-			for w.queue.Len() > 0 {
-				w.queue.Pop()
-			}
-			close(w.done)
-		}
-	}
-	w.Unlock()
-	w.tryWake()
+	w.beginStop(Drain)
 	<-w.done
 }
 

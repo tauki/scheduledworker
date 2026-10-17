@@ -17,9 +17,11 @@ No v1.0.0 tag or release has been published by this work.
 
 ### Release scope and compatibility
 
-- Retain the current main branch's Worker/Task/TaskOpt/Queue API. SetQueue and the priority queue were added on main after v0.9.0; custom Worker implementations need that method.
+- Retain the current main branch's legacy method signatures and TaskOpt/Queue API. SetQueue and the priority queue were added on main after v0.9.0; custom Worker implementations need that method.
 - Retain the working tree's Go 1.20 minimum (v0.9.0 declared Go 1.17).
 - Every requires a positive duration; unsupported negative repeat counts and unlimited repetition without an interval panic rather than causing an immediate infinite loop. Finite Repeat without Every remains supported.
 - Stop preserves draining behavior, including future queued tasks. It does not interrupt functions.
-- Defer middleware, retries, context tasks, metrics, HTTP status, and calendar helpers to a future version.
+- Add context-aware handlers, bounded retries/backoff, fixed-rate scheduling, middleware/hooks, jitter, daily business-hour filters, keyed exclusion, metadata, metrics, status/health handlers, queue observation, and context-bounded drain/abort shutdown.
+- Expose all supported features through New and Worker. Custom Worker implementations need SubmitWithOptions, StopCtx, Status and AddQueueObserver.
+- Keep the core dependency-free on Go 1.20; independently pin and verify Prometheus/OpenTelemetry example modules on Go 1.26 or newer.
 - Add fast regression tests, executable package examples, fuzz seeds for queue ordering, and Go 1.20/stable CI with race detection and vet.

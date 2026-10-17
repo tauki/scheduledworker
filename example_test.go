@@ -1,6 +1,7 @@
 package scheduledworker_test
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -25,4 +26,18 @@ func ExampleEvery() {
 	w.Stop()
 	fmt.Println("executions:", calls)
 	// Output: executions: 3
+}
+
+func Example_contextTask() {
+	w := sw.New().Start()
+	err := w.SubmitWithOptions(sw.Task{FnErr: func(ctx context.Context) error {
+		_, hasDeadline := ctx.Deadline()
+		fmt.Println("deadline:", hasDeadline)
+		return nil
+	}}, sw.WithTimeout(time.Second))
+	if err != nil {
+		panic(err)
+	}
+	w.Stop()
+	// Output: deadline: true
 }
