@@ -14,7 +14,6 @@
 
 ![main](https://github.com/tauki/scheduledworker/actions/workflows/main.yaml/badge.svg)
 [![Go Reference](https://pkg.go.dev/badge/github.com/tauki/scheduledworker.svg)](https://pkg.go.dev/github.com/tauki/scheduledworker)
-[![Go Report Card](https://goreportcard.com/badge/github.com/tauki/scheduledworker)](https://goreportcard.com/report/github.com/tauki/scheduledworker)
 
 # ScheduledWorker
 
