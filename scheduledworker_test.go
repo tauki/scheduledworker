@@ -9,16 +9,15 @@ import (
 
 func TestScheduledWorker(t *testing.T) {
 	scheduler := New().
-		SetDuration(time.Microsecond).
-		SetMaxWorker(1).
-		Start()
+		SetMaxWorker(1)
+	anchor := time.Now().Add(-time.Second)
 
 	var wg sync.WaitGroup
 	wg.Add(3)
 	counter := int64(0)
 
 	scheduler.Submit(Task{
-		At: time.Now().Add(time.Microsecond),
+		At: anchor.Add(time.Nanosecond),
 		Fn: func() {
 			if atomic.LoadInt64(&counter) != 0 {
 				t.Errorf("counter should be 0")
@@ -29,7 +28,7 @@ func TestScheduledWorker(t *testing.T) {
 	})
 
 	scheduler.Submit(Task{
-		At: time.Now().Add(time.Microsecond * 20),
+		At: anchor.Add(2 * time.Nanosecond),
 		Fn: func() {
 			if atomic.LoadInt64(&counter) != 1 {
 				t.Errorf("counter should be 1")
@@ -40,7 +39,7 @@ func TestScheduledWorker(t *testing.T) {
 	})
 
 	scheduler.Submit(Task{
-		At: time.Now().Add(time.Microsecond * 50),
+		At: anchor.Add(3 * time.Nanosecond),
 		Fn: func() {
 			if atomic.LoadInt64(&counter) != 2 {
 				t.Errorf("counter should be 2")
@@ -49,6 +48,7 @@ func TestScheduledWorker(t *testing.T) {
 			wg.Done()
 		},
 	})
+	scheduler.Start()
 	wg.Wait()
 
 	scheduler.Stop()
@@ -58,51 +58,39 @@ func TestScheduledWorker(t *testing.T) {
 }
 
 func TestScheduledWorker_Recursion(t *testing.T) {
-	scheduler := New().SetDuration(time.Second).Start()
-	var f1 func()
-	f1 = func() {
-		scheduler.Submit(Task{
-			At: time.Now(),
-			Fn: func() {
-				t.Errorf("recursion detected after closing scheduler")
-			},
-		})
-	}
-
-	scheduler.Submit(Task{
-		At: time.Now(),
-		Fn: func() {
-			scheduler.Submit(Task{
-				At: time.Now(),
-				Fn: func() {
-					f1()
-				},
-			})
-		},
-	})
-
-	scheduler.Stop()
+	w := New().Start().(*worker)
+	started, release, stopped := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	w.Submit(Task{Fn: func() {
+		close(started)
+		<-release
+		w.Submit(Task{Fn: func() { t.Error("recursive submission admitted during stop") }})
+	}})
+	waitSignal(t, started)
+	go func() { w.Stop(); close(stopped) }()
+	waitFor(t, func() bool { w.Lock(); defer w.Unlock(); return w.closed })
+	close(release)
+	waitSignal(t, stopped)
 }
 
 func TestScheduledWorker_panic(t *testing.T) {
-	scheduler := New().SetDuration(time.Nanosecond).Start()
+	scheduler := New().SetMaxWorker(1).Start()
 
 	workDone := 0
-	tc := make(chan bool, 2)
+	tc := make(chan struct{}, 2)
 
 	scheduler.Submit(Task{
 		At: time.Now(),
 		Fn: func() {
 			workDone++
-			tc <- true
+			tc <- struct{}{}
 			panic("should be recovered")
 		},
 	}, Repeat(2))
 
-	<-tc
-	<-tc
+	waitSignal(t, tc)
+	waitSignal(t, tc)
 	scheduler.Stop()
 	if workDone != 2 {
-		t.Errorf("expected: %d, got: %d", 1, workDone)
+		t.Errorf("expected: %d, got: %d", 2, workDone)
 	}
 }

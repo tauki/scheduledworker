@@ -84,6 +84,36 @@ func TestPriorityQueue(t *testing.T) {
 			if item.At.Before(previousTime) {
 				t.Errorf("item.priority = %v, want after or equal to %v", item.At, previousTime)
 			}
+			previousTime = item.At
+		}
+	})
+}
+
+func TestPriorityQueueEmptyPop(t *testing.T) {
+	q := NewPriorityQueue()
+	if q.Pop() != nil || q.Peek() != nil || q.Len() != 0 {
+		t.Fatal("empty queue did not return nil")
+	}
+}
+
+func FuzzPriorityQueueOrdering(f *testing.F) {
+	f.Add([]byte{3, 1, 4, 1, 5, 9, 2, 6})
+	f.Add([]byte{})
+	f.Fuzz(func(t *testing.T, values []byte) {
+		if len(values) > 4096 {
+			t.Skip()
+		}
+		q := NewPriorityQueue()
+		for _, value := range values {
+			q.Push(&Task{At: time.Unix(int64(value), 0)})
+		}
+		previous := time.Unix(-1, 0)
+		for q.Len() > 0 {
+			task := q.Pop()
+			if task.At.Before(previous) {
+				t.Fatal("heap returned tasks out of order")
+			}
+			previous = task.At
 		}
 	})
 }

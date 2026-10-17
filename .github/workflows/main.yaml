@@ -2,22 +2,59 @@ name: main
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    branches:
-      - main
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ['1.20.x', 'stable']
     steps:
-      - uses: actions/checkout@v2
-
-      - name: Setup Go
-        uses: actions/setup-go@v2
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
         with:
-          go-version: '1.15.0'
+          go-version: ${{ matrix.go-version }}
+          cache: false
+      - name: Check formatting
+        run: test -z "$(gofmt -l *.go examples/*/*.go)"
+      - name: Test with race detector
+        run: go test -race ./... -count=1 -timeout 2m
+      - name: Vet
+        run: go vet ./...
+      - name: Run examples
+        run: |
+          go run ./examples/basic
+          go run ./examples/periodic
+          go run ./examples/extended
 
-      - name: Run go test
-        run: go test ./... -count=1 -v
+  telemetry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        example: [prometheus, otel]
+    defaults:
+      run:
+        working-directory: examples/${{ matrix.example }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+          cache: false
+      - name: Check dependency lock and compile with race detector
+        run: go test -mod=readonly -race ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Run integration example with race detector
+        run: go run -race -mod=readonly .

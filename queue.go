@@ -4,6 +4,9 @@ import (
 	"container/heap"
 )
 
+// Queue orders tasks for a worker. A queue installed with SetQueue is exclusively
+// owned by that worker; its methods need not provide their own synchronization.
+// Peek must return nil when empty. Pop must remove the same item as Peek.
 type Queue interface {
 	Push(*Task)
 	Pop() *Task
@@ -13,6 +16,8 @@ type Queue interface {
 
 type queue []*Task
 
+// PriorityQueue orders tasks by their earliest execution time. Equal deadlines
+// have no guaranteed relative order. It is not safe for concurrent direct use.
 type PriorityQueue struct {
 	queue queue
 }
@@ -20,17 +25,25 @@ type PriorityQueue struct {
 var _ Queue = &PriorityQueue{}
 var _ heap.Interface = &queue{}
 
+// NewPriorityQueue creates an empty queue ordered by Task.At.
 func NewPriorityQueue() *PriorityQueue {
 	q := make(queue, 0)
 	heap.Init(&q)
 	return &PriorityQueue{queue: q}
 }
 
+// Push inserts a non-nil task. A nil task panics without changing the queue.
 func (pq *PriorityQueue) Push(x *Task) {
+	if x == nil {
+		panic("scheduledworker: task must not be nil")
+	}
 	heap.Push(&pq.queue, x)
 }
 
 func (pq *PriorityQueue) Pop() *Task {
+	if pq.Len() == 0 {
+		return nil
+	}
 	return heap.Pop(&pq.queue).(*Task)
 }
 
