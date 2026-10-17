@@ -32,7 +32,11 @@ func NewPriorityQueue() *PriorityQueue {
 	return &PriorityQueue{queue: q}
 }
 
+// Push inserts a non-nil task. A nil task panics without changing the queue.
 func (pq *PriorityQueue) Push(x *Task) {
+	if x == nil {
+		panic("scheduledworker: task must not be nil")
+	}
 	heap.Push(&pq.queue, x)
 }
 

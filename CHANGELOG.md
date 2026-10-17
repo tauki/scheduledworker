@@ -6,6 +6,10 @@ No v1.0.0 tag or release has been published by this work.
 
 ### Fixed
 
+- Detach task snapshots passed to hooks so retained attempt metadata stays stable and safe to read during later retries.
+- Return HTTP 500 when a status snapshot cannot be encoded as JSON.
+- Reject nil priority-queue tasks before they can create an undrainable queue entry.
+
 - Dispatch newly due work when a slot is free instead of waiting for a whole batch to finish.
 - Wake immediately for earlier submissions and worker-limit changes; use a deadline timer owned only by the scheduling loop.
 - Serialize submission, configuration, completion, and stop state so shutdown cannot leave a late accepted task stranded.

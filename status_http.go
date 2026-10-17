@@ -9,8 +9,13 @@ import (
 // control and server lifetime; no HTTP server is started by the library.
 func NewStatusHandler(w interface{ Status() Status }) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		data, err := json.Marshal(w.Status())
+		if err != nil {
+			http.Error(rw, "cannot encode scheduler status", http.StatusInternalServerError)
+			return
+		}
 		rw.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(rw).Encode(w.Status())
+		_, _ = rw.Write(append(data, '\n'))
 	})
 }
 

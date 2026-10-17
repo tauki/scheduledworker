@@ -104,6 +104,17 @@ func (t *Task) Spec() *Spec {
 	return s
 }
 
+// snapshot detaches mutable execution state before exposing a task to a
+// callback. Retaining a hook's task must not retain the live retry counter.
+func (t *Task) snapshot() Task {
+	view := *t
+	if t.state != nil {
+		state := *t.state
+		view.state = &state
+	}
+	return view
+}
+
 func cloneSpec(s *Spec) *Spec {
 	c := *s
 	c.Labels = make(map[string]string, len(s.Labels))

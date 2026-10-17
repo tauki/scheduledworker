@@ -77,7 +77,7 @@ SetDuration retains the idle wake interval setting (positive durations only). Sc
 
 ## Custom queues
 
-SetQueue replaces the queued-task implementation and transfers pending tasks. Replacements after Stop begins are ignored. The built-in priority queue orders by Task.At. Its empty Pop/Peek return nil. Installed queues belong exclusively to the worker: do not mutate them directly while it is running. Queue methods must be prompt, internally consistent, and must not call worker methods. Prefilled tasks without options execute once.
+SetQueue replaces the queued-task implementation and transfers pending tasks. Replacements after Stop begins are ignored. The built-in priority queue orders by Task.At. Its empty Pop/Peek return nil; Push requires a non-nil task and panics on nil. Installed queues belong exclusively to the worker: do not mutate them directly while it is running. Queue methods must be prompt, internally consistent, and must not call worker methods. Prefilled tasks without options execute once.
 
 ## Examples and checks
 
@@ -124,7 +124,7 @@ The legacy `Submit` also accepts `FnErr`, using a background context; if both ha
 | Fixed rate | Uses the original time grid and never overlaps its own registration. After a slow occurrence, the latest missed tick is retained; earlier missed ticks are discarded. Finishing at t=36 for a 10-second schedule anchored at t=0 makes t=30 eligible next. |
 | Retries | `MaxAttempts` includes the initial attempt; 0/1 disables retry. `Backoff` receives retry numbers starting at 1. A retry waits in the queue and uses the normal concurrency/key limits. Exhaustion permits the next recurring occurrence. Negative custom delays normalize to zero. A backoff panic is reported to OnError and exhausts the current occurrence. Handler panics retry only with `RetryOnPanic`. |
 | Cancellation | `WithContext`, `WithTimeout`, `WithDeadline`, `WithCancelOnStop`. Timeout and deadline both apply; the earlier bound wins. Handlers must observe cancellation and return an error to report failure. A canceled parent context ends future recurrence/retries. |
-| Hooks | `WithOnStart`, `WithOnComplete`, `WithOnError`, `WithOnPanic`. Start and outcome hooks run for each attempt; OnError also reports retry/reschedule policy errors. Hook/collector panics are isolated and counted by `Status.CallbackPanicked`. |
+| Hooks | `WithOnStart`, `WithOnComplete`, `WithOnError`, `WithOnPanic`. Start and outcome hooks run for each attempt with detached task snapshots; retained attempt metadata stays unchanged as retries advance. OnError also reports retry/reschedule policy errors. Hook/collector panics are isolated and counted by `Status.CallbackPanicked`. |
 | Middleware | `WithOnEnqueue`, `WithOnRun`, `WithOnReschedule`. Registration order determines wrapping order. Call `next` synchronously zero or one times; repeated calls return `ErrNextCalledTwice`. Run middleware wraps the handler. Scheduling middleware may defer eligibility or drop work; it cannot bypass Repeat/Until or advance a time before the scheduler's eligibility. |
 | Jitter | `WithJitter(d)` adds a random delay in [0,d) to initial and recurring eligibility. Zero disables jitter; negative values are invalid. Retry delays use their own backoff. |
 | Business hours | `WithBusinessHours("Europe/Oslo", 9, 17)` defers eligibility into a daily window. Zones/hours are validated; calendar arithmetic respects DST using Go's civil-time resolution. Weekends are included. This filters eligibility rather than guaranteeing actual execution occurs inside the window. |

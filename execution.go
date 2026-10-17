@@ -76,7 +76,7 @@ func chain(inters []Interceptor, terminal Next) Next {
 }
 
 func transform(inters []Interceptor, ctx context.Context, task *Task, earliest time.Time) (bool, error) {
-	view := *task
+	view := task.snapshot()
 	keep := false
 	err, _, _ := protected(func() error {
 		return chain(inters, func(_ context.Context, t *Task) error {
@@ -201,11 +201,11 @@ func (w *worker) execute(task *Task) {
 		defer cancel()
 		w.callback(func() {
 			if task.spec.OnStart != nil {
-				view := *task
+				view := task.snapshot()
 				task.spec.OnStart(&view)
 			}
 		})
-		view := *task
+		view := task.snapshot()
 		err, panicked, pan = protected(func() error {
 			return chain(task.spec.OnRun, func(ctx context.Context, t *Task) error {
 				if t.FnErr != nil {
@@ -246,7 +246,7 @@ func (w *worker) execute(task *Task) {
 	}
 	s := task.spec
 	w.callback(func() {
-		view := *task
+		view := task.snapshot()
 		switch {
 		case panicked:
 			if s.OnPanic != nil {
@@ -353,7 +353,7 @@ func (w *worker) nextOccurrence(task *Task, runErr error, panicked bool, finishe
 func (w *worker) policyError(task *Task, err error) {
 	w.callbackPanicIf(err)
 	if task.spec.OnError != nil {
-		w.callback(func() { view := *task; task.spec.OnError(&view, err) })
+		w.callback(func() { view := task.snapshot(); task.spec.OnError(&view, err) })
 	}
 }
 
