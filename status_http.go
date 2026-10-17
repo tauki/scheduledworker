@@ -20,7 +20,8 @@ func NewStatusHandler(w interface{ Status() Status }) http.Handler {
 }
 
 // NewHealthHandler reports readiness: started and accepting work. Normal queued
-// or executing work is healthy. Stopping, stopped, and idle workers return 503.
+// or executing work is healthy, as is a started worker with no tasks. Workers
+// that have not started or are stopping/stopped return 503.
 func NewHealthHandler(w interface{ Status() Status }) http.Handler {
 	return http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
 		rw.Header().Set("Content-Type", "text/plain; charset=utf-8")

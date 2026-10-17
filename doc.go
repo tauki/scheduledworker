@@ -8,8 +8,12 @@
 // Panics are recovered; optional hooks report failures and panics.
 // Distinct registrations can run concurrently, even if they use the same Fn.
 //
-// Stop does not cancel Go functions or skip future queued tasks. Call it from the
-// owning application; calling it inside one of its functions waits on itself.
-// StopCtx can discard queued work and bound the caller's wait. Context cancellation
-// is cooperative and never releases an execution slot before its function returns.
+// Stop closes admission and prevents further repeats/retries, but drains work
+// already queued at its scheduled times. WithCancelOnStop requests cooperative
+// context cancellation for opted-in tasks; other tasks continue normally.
+// Call Stop or StopCtx from the owning application; calling either inside an
+// executing function can wait on itself. StopCtx can discard queued work and
+// bound the caller's wait. Context cancellation never kills a function or releases
+// its execution slot before it returns. A context-aware handler must return an
+// error to report cancellation or timeout as a failure.
 package scheduledworker
