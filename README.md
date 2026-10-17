@@ -45,6 +45,22 @@ func main() {
 
 New creates no goroutine or timer until Start. Tasks can be submitted before Start. Start is idempotent; a stopped worker cannot restart.
 
+## Pausing and resuming
+
+`Pause()` suspends new dispatch and retains queued work. Submissions remain accepted, while already-dispatched functions and their callbacks continue. `Resume()` allows queued work to dispatch again:
+
+```go
+w := sw.New().Pause().Start()
+w.Submit(sw.Task{Fn: refresh}) // retained until resumed or drained by Stop
+w.Resume()
+```
+
+Both methods are idempotent and can be called from a handler or callback. Pause returns promptly; an invocation dispatched before it returns can still enter its function afterward. Pause does not cancel contexts or wait for running work.
+
+Eligibility times, retry state, and repeat counts are retained. Overdue work becomes eligible on resume under the normal concurrency/key limits; future work still waits until due. Active functions can queue their next retry or occurrence while paused. Intervals are not shifted by the pause; fixed-delay and fixed-rate rescheduling keep their existing rules.
+
+Before Start, Pause/Resume only change the initial dispatch gate. Resume does not start a worker, and repeated Start does not implicitly resume one. `Status.Paused` reports the gate independently of in-flight work; `Status.Running` can remain true while paused. Stop/StopCtx remain permanent shutdown, override pause for draining, and cannot be undone by Resume.
+
 ## Repeating work
 
 ```go
@@ -142,9 +158,9 @@ Middleware must return synchronously and must not retain its task or continuatio
 
 `StopCtx(ctx, Drain)` limits the caller's wait while keeping queued work. `StopCtx(ctx, Abort)` drops queued work and waits for dispatched functions and completion callbacks. A context timeout returns `ctx.Err()` while shutdown continues. Repeated calls wait for the same completion; Abort can escalate an earlier Drain. Neither method can restart a stopped worker. Calling Stop before Start still discards pending work.
 
-`Status()` reports lifecycle, queue length, in-flight work, next eligibility time, and counters. `Scheduled` counts scheduler queue insertions, including repeats/retries; prefilled custom queues bypass that counter. Attempt counters distinguish successes, errors and panics. `AddQueueObserver` reports queue mutations outside locks; concurrent notifications can arrive out of order, so use `Status()` or `StartQueueLengthSampler` for a current gauge. The sampler blocks until its context is canceled, and the application owns any goroutine used for it.
+`Status()` reports lifecycle (including `Paused`), queue length, in-flight work, next eligibility time, and counters. `Scheduled` counts scheduler queue insertions, including repeats/retries; prefilled custom queues bypass that counter. Attempt counters distinguish successes, errors and panics. `AddQueueObserver` reports queue mutations outside locks; concurrent notifications can arrive out of order, so use `Status()` or `StartQueueLengthSampler` for a current gauge. The sampler blocks until its context is canceled, and the application owns any goroutine used for it.
 
-`NewStatusHandler(w)` serves JSON and returns 500 if the snapshot cannot be encoded. `NewHealthHandler(w)` returns 200 while started and accepting work, including when no tasks are queued, future tasks are queued, or all slots are occupied; workers that have not started or are stopping/stopped return 503. The application owns routing, access control and HTTP server lifetime.
+`NewStatusHandler(w)` serves JSON and returns 500 if the snapshot cannot be encoded. `NewHealthHandler(w)` returns 200 while started and dispatch is enabled, including when no tasks are queued, future tasks are queued, or all slots are occupied; workers that have not started or are paused/stopping/stopped return 503. The application owns routing, access control and HTTP server lifetime.
 
 ## Integration examples
 
@@ -161,4 +177,4 @@ The telemetry examples are separate modules with pinned SDK dependencies and Go 
 
 The examples use the official [Prometheus Go client pattern](https://prometheus.io/docs/guides/go-application/) and [OpenTelemetry Go instrumentation APIs](https://opentelemetry.io/docs/languages/go/instrumentation/). Their programs finish after a demonstration rather than starting a persistent server.
 
-Custom implementations of `Worker` must implement `SetQueue`, `SubmitWithOptions`, `StopCtx`, `Status`, and `AddQueueObserver` alongside the original submission, configuration, and lifecycle methods. Callers use the same `New()` constructor and fluent methods for legacy and extended options.
+Custom implementations of `Worker` must implement `SetQueue`, `SubmitWithOptions`, `Pause`, `Resume`, `StopCtx`, `Status`, and `AddQueueObserver` alongside the original submission, configuration, and lifecycle methods. Callers use the same `New()` constructor and fluent methods for legacy and extended options.

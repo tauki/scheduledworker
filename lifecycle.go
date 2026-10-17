@@ -17,6 +17,8 @@ const (
 // Status is a point-in-time snapshot. Scheduled counts successful queue inserts,
 // Started/Completed/Failed/Panicked count attempts, and CallbackPanicked counts
 // recovered observation/policy panics. Future queued work is normal, not unhealthy.
+// Running describes a started, not-yet-terminated coordinator; it can be true
+// alongside Paused or Stopping. Paused suspends dispatch, not admission.
 type Status struct {
 	QueueLen         int
 	InFlight         int64
@@ -29,6 +31,7 @@ type Status struct {
 	Dropped          int64
 	NextDue          time.Time
 	Running          bool
+	Paused           bool
 	Stopping         bool
 	Stopped          bool
 }
@@ -40,12 +43,41 @@ func (w *worker) Status() Status {
 	s.QueueLen = w.queue.Len()
 	s.InFlight = int64(w.inFlight)
 	s.Running = w.started && !w.terminated
+	s.Paused = w.paused
 	s.Stopping = w.closed && !w.terminated
 	s.Stopped = w.terminated
 	if head := w.queue.Peek(); head != nil {
 		s.NextDue = head.At
 	}
 	return s
+}
+
+// Pause suspends new dispatch while retaining queued work and accepting new
+// submissions. Already-dispatched invocations and their callbacks continue;
+// they may enter user code after Pause returns. Pause does not wait for them or
+// cancel their contexts. It is idempotent and has no effect after Stop begins.
+// Before Start, it sets the initial dispatch gate without starting the worker.
+func (w *worker) Pause() Worker {
+	w.Lock()
+	if !w.closed {
+		w.paused = true
+	}
+	w.Unlock()
+	w.tryWake()
+	return w
+}
+
+// Resume permits dispatch of queued work at its original eligibility times.
+// Overdue work is immediately eligible. It is idempotent, does not start a
+// never-started worker, and cannot restart one after Stop has begun.
+func (w *worker) Resume() Worker {
+	w.Lock()
+	if !w.closed {
+		w.paused = false
+	}
+	w.Unlock()
+	w.tryWake()
+	return w
 }
 
 // StopCtx closes admission/repeats and waits up to ctx's deadline. Drain keeps
@@ -75,6 +107,7 @@ func (w *worker) beginStop(mode StopMode) {
 	w.Lock()
 	first := !w.closed
 	w.closed = true
+	w.paused = false // Terminal Drain must progress even if dispatch was paused.
 	if mode == Abort || !w.started {
 		for w.queue.Len() > 0 {
 			w.queue.Pop()

@@ -41,3 +41,14 @@ func Example_contextTask() {
 	w.Stop()
 	// Output: deadline: true
 }
+
+func Example_pauseResume() {
+	w := sw.New().Pause().Start()
+	w.Submit(sw.Task{Fn: func() { fmt.Println("work completed") }})
+	fmt.Println("paused queue:", w.Status().QueueLen)
+	w.Resume()
+	w.Stop()
+	// Output:
+	// paused queue: 1
+	// work completed
+}

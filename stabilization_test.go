@@ -289,9 +289,15 @@ func TestWorkerConcurrentLifecycleAndConfiguration(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		w := New()
 		var goroutines sync.WaitGroup
-		goroutines.Add(4)
+		goroutines.Add(5)
 		go func() { defer goroutines.Done(); w.Start(); w.Start() }()
 		go func() { defer goroutines.Done(); w.Stop(); w.Stop() }()
+		go func() {
+			defer goroutines.Done()
+			for n := 0; n < 10; n++ {
+				w.Pause().Resume()
+			}
+		}()
 		go func() {
 			defer goroutines.Done()
 			for n := 0; n < 10; n++ {

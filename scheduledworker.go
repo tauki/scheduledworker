@@ -22,6 +22,8 @@ type Worker interface {
 	SetMaxWorker(int) Worker
 	SetQueue(Queue) Worker
 	Start() Worker
+	Pause() Worker
+	Resume() Worker
 	Stop()
 	StopCtx(context.Context, StopMode) error
 	Status() Status
@@ -50,6 +52,7 @@ type worker struct {
 	maxWorker    int
 	idleDuration time.Duration
 	started      bool
+	paused       bool
 	closed       bool
 	inFlight     int
 	wake         chan struct{}
@@ -104,7 +107,8 @@ func (w *worker) Submit(task Task, opts ...TaskOpt) {
 	w.enqueue(&task)
 }
 
-// Start starts scheduling once. Repeated calls, including after Stop, are no-ops.
+// Start starts scheduling once. Repeated calls, including while paused or after
+// Stop, are no-ops. Use Resume to resume dispatch after Pause.
 func (w *worker) Start() Worker {
 	w.Lock()
 	if !w.started && !w.closed {
@@ -140,10 +144,10 @@ func (w *worker) run() {
 			return
 		}
 		wait := w.idleDuration
-		saturated := w.inFlight >= w.maxWorker
-		if !saturated {
-			task, delay, blocked := w.nextTask(time.Now())
-			wait, saturated = delay, blocked
+		blocked := w.paused || w.inFlight >= w.maxWorker
+		if !blocked {
+			task, delay, keyBlocked := w.nextTask(time.Now())
+			wait, blocked = delay, keyBlocked
 			if task != nil {
 				w.inFlight++
 				task.dispatching = true
@@ -161,12 +165,12 @@ func (w *worker) run() {
 
 		stopTimer()
 		var timerC <-chan time.Time
-		if !saturated {
+		if !blocked {
 			timer.Reset(wait)
 			armed = true
 			timerC = timer.C
 		}
-		// Under saturation only completion/configuration/submission wakes us.
+		// Pause, saturation and key contention wait for a state-change wakeup.
 		// An already-due queue head must not produce a zero-duration busy loop.
 		select {
 		case <-timerC:
