@@ -48,6 +48,78 @@ func TestBusinessHoursAcrossHalfHourDSTGap(t *testing.T) {
 	}
 }
 
+func TestBusinessHoursAcrossQuarterHourDSTBoundary(t *testing.T) {
+	location, err := time.LoadLocation("Pacific/Chatham")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 9, 27, 2, 30, 0, 0, location)
+	want := time.Date(2026, 9, 27, 3, 45, 0, 0, location)
+	if got := businessTime(at, location, 3, 4); !got.Equal(want) {
+		t.Fatalf("next=%v want=%v", got.In(location), want)
+	}
+}
+
+func TestBusinessHoursUsesFirstRepeatedWindow(t *testing.T) {
+	location, err := time.LoadLocation("Pacific/Chatham")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 4, 5, 2, 30, 0, 0, location)
+	want := at.Add(30 * time.Minute) // First 03:00, before the clock goes back.
+	if got := businessTime(at, location, 3, 4); !got.Equal(want) {
+		t.Fatalf("next=%v want first window=%v", got.In(location), want)
+	}
+}
+
+func TestBusinessHoursReopensDuringRepeatedWindow(t *testing.T) {
+	location, err := time.LoadLocation("Pacific/Chatham")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 4, 5, 2, 30, 0, 0, location).Add(time.Hour)
+	want := at.Add(15 * time.Minute) // 03:45 turns back into 02:45.
+	if got := businessTime(at, location, 2, 3); !got.Equal(want) {
+		t.Fatalf("next=%v want reopened window=%v", got.In(location), want)
+	}
+}
+
+func TestBusinessHoursAcrossSecondPrecisionOffsetChange(t *testing.T) {
+	location, err := time.LoadLocation("Africa/Monrovia")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(1972, 1, 6, 23, 50, 0, 0, location)
+	want := time.Date(1972, 1, 7, 0, 44, 30, 0, time.UTC)
+	if got := businessTime(at, location, 0, 1); !got.Equal(want) {
+		t.Fatalf("next=%v want partial window=%v", got.In(location), want)
+	}
+}
+
+func TestBusinessHoursAcrossSkippedCivilDate(t *testing.T) {
+	location, err := time.LoadLocation("Pacific/Apia")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2011, 12, 29, 23, 30, 0, 0, location)
+	want := time.Date(2011, 12, 31, 9, 0, 0, 0, location)
+	if got := businessTime(at, location, 9, 17); !got.Equal(want) {
+		t.Fatalf("next=%v want=%v", got.In(location), want)
+	}
+}
+
+func TestBusinessHoursAcrossExtrapolatedLeapYearEnd(t *testing.T) {
+	location, err := time.LoadLocation("Europe/Oslo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2040, 12, 31, 20, 0, 0, 0, location)
+	want := time.Date(2041, 1, 1, 9, 0, 0, 0, location)
+	if got := businessTime(at, location, 9, 17); !got.Equal(want) {
+		t.Fatalf("next=%v want=%v", got.In(location), want)
+	}
+}
+
 func TestRetainedHookSnapshotCanBeReadDuringRetries(t *testing.T) {
 	w := New().Start()
 	defer w.Stop()

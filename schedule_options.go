@@ -30,8 +30,9 @@ func WithJitter(maxJitter time.Duration) Option {
 
 // WithBusinessHours defers scheduling to the next daily [startHour,endHour)
 // window in tz. Hours must satisfy 0<=start<end<=24. Unknown zones are errors.
-// Calendar arithmetic respects DST; repeated/missing civil times use Go's
-// time.Date resolution. This is a window filter, not a cron scheduler.
+// Calendar arithmetic respects timezone transitions, advancing to the earliest
+// eligible instant when civil times are skipped or repeated. This is a window
+// filter, not a cron scheduler.
 func WithBusinessHours(tz string, startHour, endHour int) Option {
 	return OptionFunc(func(s *Spec) {
 		location, err := time.LoadLocation(tz)
@@ -58,13 +59,21 @@ func businessTime(at time.Time, location *time.Location, start, end int) time.Ti
 		if local.Hour() >= end {
 			day++
 		}
-		candidate := time.Date(local.Year(), local.Month(), day, start, 0, 0, 0, location)
-		// Date may normalize a missing civil hour (or a skipped civil date)
-		// backwards. Advance through the transition and recheck the window.
-		for !candidate.After(at) {
-			candidate = candidate.Add(time.Hour)
+		// Project the next civil start using the offset currently in effect.
+		// If that offset changes first, visit the exact transition and recheck:
+		// Date with location can select a later repeated time or normalize a
+		// missing start past a still-usable part of today's window.
+		_, offset := local.Zone()
+		candidate := time.Date(local.Year(), local.Month(), day, start, 0, 0, 0, time.UTC).
+			Add(-time.Duration(offset) * time.Second).In(location)
+		_, transition := local.ZoneBounds()
+		// Older Go tzdata extrapolation can report an already-past year-end
+		// boundary. Only advance through a strictly future transition.
+		if !transition.IsZero() && transition.After(at) && !transition.After(candidate) {
+			at = transition
+		} else {
+			at = candidate
 		}
-		at = candidate
 	}
 }
 
