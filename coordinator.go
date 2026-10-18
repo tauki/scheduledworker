@@ -130,8 +130,10 @@ func (c *coordinator) run() {
 			wake = timer.C
 		}
 		var observerDone <-chan struct{}
+		var observerChanged <-chan struct{}
 		if c.obs != nil && !c.observerExited {
 			observerDone = c.obs.done
+			observerChanged = c.obs.changed
 		}
 		select {
 		case cmd := <-c.s.commands:
@@ -151,6 +153,8 @@ func (c *coordinator) run() {
 			c.workersExited++
 		case <-observerDone:
 			c.observerExited = true
+		case <-observerChanged:
+			// Publish the updated counters on the next coordinator turn.
 		case <-wake:
 		}
 		timer.Stop()

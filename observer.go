@@ -11,12 +11,13 @@ type eventDispatcher struct {
 	ctx             context.Context
 	cancel          context.CancelFunc
 	done            chan struct{}
+	changed         chan struct{}
 	dropped, panics atomic.Uint64
 }
 
 func newEventDispatcher(fn Observer, size int) *eventDispatcher {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &eventDispatcher{fn: fn, queue: make(chan Event, size), ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	return &eventDispatcher{fn: fn, queue: make(chan Event, size), ctx: ctx, cancel: cancel, done: make(chan struct{}), changed: make(chan struct{}, 1)}
 }
 func (o *eventDispatcher) run() {
 	defer close(o.done)
@@ -24,6 +25,7 @@ func (o *eventDispatcher) run() {
 	for event := range o.queue {
 		if o.ctx.Err() != nil {
 			o.dropped.Add(1)
+			o.notify()
 			continue
 		}
 		func() {
@@ -32,6 +34,7 @@ func (o *eventDispatcher) run() {
 				if !normal {
 					_ = recover()
 					o.panics.Add(1)
+					o.notify()
 				}
 			}()
 			o.fn(o.ctx, event)
@@ -39,6 +42,16 @@ func (o *eventDispatcher) run() {
 		}()
 	}
 }
+
+// Coalesce counter changes into one wakeup. Counter publication must not depend
+// on unrelated scheduling activity, and notification must never block delivery.
+func (o *eventDispatcher) notify() {
+	select {
+	case o.changed <- struct{}{}:
+	default:
+	}
+}
+
 func (o *eventDispatcher) seal()  { close(o.queue) }
 func (o *eventDispatcher) abort() { o.cancel() }
 func (c *coordinator) emit(event Event) {
