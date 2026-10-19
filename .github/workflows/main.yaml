@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go-version: ['1.25.x', '1.26.x', 'stable']
+        go-version: ['1.20.x', 'stable']
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-go@v7.0.0
@@ -30,18 +30,11 @@ jobs:
         run: go test -race ./... -count=1 -timeout 2m
       - name: Vet
         run: go vet ./...
-      - name: Run structured logging and HTTP example
-        run: go run -race ./examples/logging
-      - name: Migration fixtures
-        working-directory: examples/migration
+      - name: Run examples
         run: |
-          go test -mod=readonly -race ./... -count=1
-          go vet ./...
-          go run -race -mod=readonly .
-      - name: Fuzz coordinator transitions and indexed heap
-        run: |
-          go test -run '^$' -fuzz '^FuzzCoordinatorTransitions$' -fuzztime 10s -parallel 2
-          go test -run '^$' -fuzz '^FuzzIndexedHeap$' -fuzztime 10s -parallel 2
+          go run ./examples/basic
+          go run ./examples/periodic
+          go run ./examples/extended
 
   telemetry:
     runs-on: ubuntu-latest

@@ -1,10 +1,10 @@
-module github.com/tauki/scheduledworker/v2/examples/prometheus
+module github.com/tauki/scheduledworker/examples/prometheus
 
 go 1.26.0
 
 require (
 	github.com/prometheus/client_golang v1.25.0
-	github.com/tauki/scheduledworker/v2 v2.0.0
+	github.com/tauki/scheduledworker v0.9.0
 )
 
 require (
@@ -18,4 +18,4 @@ require (
 	google.golang.org/protobuf v1.36.12 // indirect
 )
 
-replace github.com/tauki/scheduledworker/v2 => ../..
+replace github.com/tauki/scheduledworker => ../..

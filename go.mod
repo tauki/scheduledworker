@@ -1,3 +1,3 @@
-module github.com/tauki/scheduledworker/v2
+module github.com/tauki/scheduledworker
 
-go 1.25.0
+go 1.20
