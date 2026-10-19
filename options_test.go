@@ -119,3 +119,77 @@ func TestOptionsCanBeSharedByConcurrentCallers(t *testing.T) {
 	}
 	callers.Wait()
 }
+
+func TestSharedScheduleOptionsKeepConcurrentRegistrationsIndependent(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const registrations = 8
+		s := newTestScheduler(t, WithWorkers(2), WithMaxSchedules(registrations))
+		defer shutdown(t, s)
+		s.jitter = func(uint64) uint64 { return 0 }
+		first := time.Now().Add(time.Minute)
+		opts := []ScheduleOption{
+			WithName("shared"), WithFixedDelay(time.Second), WithAt(first),
+			WithUntil(first.Add(time.Second)), WithMaxRuns(2),
+			WithTimeout(time.Second), WithRetry(RetryPolicy{MaxAttempts: 2}),
+		}
+		calls := make(chan RunInfo, registrations*4)
+		handler := func(_ context.Context, run RunInfo) error {
+			calls <- run
+			if run.Attempt == 1 {
+				return errors.New("retry")
+			}
+			return nil
+		}
+		handles := make([]*Handle, registrations)
+		errs := make(chan error, registrations)
+		var callers sync.WaitGroup
+		for i := range handles {
+			callers.Go(func() {
+				var err error
+				handles[i], err = s.Schedule(background, handler, opts...)
+				if err != nil {
+					errs <- err
+				}
+			})
+		}
+		callers.Wait()
+		close(errs)
+		for err := range errs {
+			t.Fatal(err)
+		}
+		// All admissions have acknowledged; replacing an option cannot alter
+		// a committed registration or another caller's retry normalization.
+		opts[0] = WithName("changed after admission")
+		ids := make(map[ScheduleID]bool)
+		for _, h := range handles {
+			if ids[h.ID()] {
+				t.Fatal("duplicate registration ID", h.ID())
+			}
+			ids[h.ID()] = true
+			r := result(t, h)
+			if r.Reason != RunLimitReached || r.Counters.RunsSucceeded != 2 || r.Counters.AttemptsDispatched != 4 || r.Counters.RetriesScheduled != 2 {
+				t.Fatal(r)
+			}
+		}
+		synctest.Wait()
+		if st := s.Status(); st.Accepted != registrations || st.ActiveSchedules != 0 || st.Counters.RunsSucceeded != registrations*2 || st.Counters.AttemptsDispatched != registrations*4 {
+			t.Fatal(st)
+		}
+		close(calls)
+		runs := make(map[RunID][]RunInfo)
+		for run := range calls {
+			if !ids[run.ScheduleID] || run.Name != "shared" || run.Number < 1 || run.Number > 2 || !run.ScheduledAt.Equal(first.Add(time.Duration(run.Number-1)*time.Second)) {
+				t.Fatal(run)
+			}
+			runs[run.RunID] = append(runs[run.RunID], run)
+		}
+		if len(runs) != registrations*2 {
+			t.Fatal("run identities were shared", runs)
+		}
+		for _, attempts := range runs {
+			if len(attempts) != 2 || attempts[0].Attempt != 1 || attempts[1].Attempt != 2 || attempts[0].ScheduleID != attempts[1].ScheduleID || attempts[0].Number != attempts[1].Number {
+				t.Fatal("retry identity changed", attempts)
+			}
+		}
+	})
+}

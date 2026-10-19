@@ -229,6 +229,7 @@ func FuzzCoordinatorTransitions(f *testing.F) {
 	f.Add([]byte{18, 2, 3})
 	f.Add([]byte{0, 2, 3, 1, 2, 3})
 	f.Add([]byte{36, 2, 3, 1, 2, 3})
+	f.Add([]byte{0, 18, 4, 2, 3, 1, 2, 3})
 	f.Fuzz(func(t *testing.T, ops []byte) { checkCoordinatorTransitions(t, ops) })
 }
 
@@ -241,6 +242,7 @@ func TestCoordinatorFuzzExercisesOutcomes(t *testing.T) {
 		{"success", []byte{18, 2, 3}, Counters{RunsStarted: 1, RunsSucceeded: 1, AttemptsDispatched: 1}},
 		{"failure", []byte{0, 2, 3, 1, 2, 3}, Counters{RunsStarted: 1, RunsFailed: 1, AttemptsDispatched: 2, AttemptsFailed: 2, RetriesScheduled: 1}},
 		{"retry recovery", []byte{36, 2, 3, 1, 2, 3}, Counters{RunsStarted: 1, RunsSucceeded: 1, AttemptsDispatched: 2, AttemptsFailed: 1, RetriesScheduled: 1}},
+		{"cancel oldest", []byte{0, 18, 4, 2, 3, 1, 2, 3}, Counters{RunsStarted: 1, RunsSucceeded: 1, AttemptsDispatched: 1}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := checkCoordinatorTransitions(t, tt.ops); got != tt.want {
@@ -297,9 +299,15 @@ func checkCoordinatorTransitions(t *testing.T, ops []byte) Counters {
 			default:
 			}
 		case 4:
+			// Map iteration must not change the meaning of a saved fuzz input.
+			var oldest *registration
 			for _, r := range c.regs {
-				c.cancel(r, ExplicitlyCanceled, true)
-				break
+				if oldest == nil || r.order < oldest.order {
+					oldest = r
+				}
+			}
+			if oldest != nil {
+				c.cancel(oldest, ExplicitlyCanceled, true)
 			}
 		case 5:
 			if op > 200 {
