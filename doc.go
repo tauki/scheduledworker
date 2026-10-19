@@ -1,25 +1,48 @@
-// Package scheduledworker provides process-local one-shot, fixed-delay and fixed-rate
-// function scheduling. It limits concurrent invocations and drains queued tasks
-// on Stop. Queued work is held in memory and is lost when the process exits.
+// Package scheduledworker is a bounded, process-local scheduler for one-shot,
+// fixed-delay, and fixed-rate work. Construct with New, Start explicitly, and
+// retain registration Handles to cancel work or inspect terminal results.
 //
-// Recurring functions run serially within their registration, with the next
-// interval measured after completion or panic for fixed-delay work. Extended
-// options add bounded retries, context-aware handlers, middleware and observation.
-// Panics are recovered; optional hooks report failures and panics.
-// Distinct registrations can run concurrently, even if they use the same Fn.
+// New and Schedule accept variadic options; their defaults are a scheduler with
+// 10 workers and 10,000 slots, and one immediate handler invocation respectively.
+// Options are applied and validated before construction or registration.
 //
-// Pause suspends new dispatch while retaining queued work and accepting new
-// submissions. Already-dispatched invocations continue. Resume permits dispatch
-// at the original eligibility times; neither method starts a never-started worker.
-// Start remains idempotent and does not implicitly resume a paused worker.
+// One coordinator owns schedule/run/attempt transitions. WithWorkers bounds
+// dispatched attempts, WithMaxSchedules bounds retained registrations,
+// and each registration has one open run, one pending occurrence, at most two
+// indexed deadlines, and one ready-list entry. Retries never overlap their run.
+// New starts no goroutine. Running uses the configured workers, one coordinator, and
+// optionally one observer dispatcher; no goroutine is created per registration.
 //
-// Stop closes admission and prevents further repeats/retries, but drains work
-// already queued at its scheduled times, overriding Pause. WithCancelOnStop
-// requests cooperative context cancellation for opted-in tasks; other tasks
-// continue normally.
-// Call Stop or StopCtx from the owning application; calling either inside an
-// executing function can wait on itself. StopCtx can discard queued work and
-// bound the caller's wait. Context cancellation never kills a function or releases
-// its execution slot before it returns. A context-aware handler must return an
-// error to report cancellation or timeout as a failure.
+// Schedule's context controls admission only. Start's context owns the entire
+// scheduler lifetime. Handle.Cancel prevents further dispatch and requests
+// cancellation of dispatched work. Cancellation and timeouts are cooperative:
+// a handler keeps its worker slot until it returns or panics. A dispatch invokes
+// the handler at most once, but retries can repeat effects. Handlers requiring
+// business deduplication must implement their own idempotency.
+//
+// Shutdown abandons undispatched work and waits for dispatched attempts and
+// observation to finish. Expiration of any Shutdown caller escalates shared
+// cancellation. Done closes only when all owned goroutines have exited. A
+// handler or observer that ignores cancellation can prevent full termination.
+// Do not wait for scheduler termination from one of its handlers/observers, or
+// wait inside a handler for work queued behind the same saturated worker pool.
+// runtime.Goexit, process exits, and unmanaged goroutine panics are outside the
+// result guarantee.
+//
+// Timing is elapsed-time based, not calendar scheduling. Eligibility is a lower
+// bound. Wall times are resolved once on admission; later clock adjustments do
+// not retarget registrations. Fixed-rate missed ticks coalesce to the latest
+// permitted tick. WithUntil bounds nominal times inclusively, not retries or actual
+// execution times. WithMaxRuns counts first dispatches, including failed runs.
+//
+// Snapshots and final handle results are authoritative within the process.
+// Observer events are ordered, asynchronous, bounded, and best effort. Never
+// depend on observer delivery for business actions or registry cleanup. Errors
+// and panic values may reference application objects; synchronize those objects
+// before inspecting them concurrently. Schedulers must not be copied.
+//
+// There is no persistence, coordination between processes, public queue plugin,
+// mutable configuration, pause/resume, cron, business windows, occurrence jitter,
+// or keyed exclusion in v2.0. Applications requiring those v1 features can keep
+// using the v1 import path for those jobs.
 package scheduledworker
