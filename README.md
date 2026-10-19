@@ -1,8 +1,14 @@
 # ScheduledWorker v2
 
-An embedded, bounded Go scheduler with one-shot, fixed-delay, and fixed-rate schedules. V2 is developed at the repository root on `feat/v2-scheduler` and has not been released. V1 maintenance uses the `release/v1` branch; the published [v1.0.0 sources](https://github.com/tauki/scheduledworker/tree/v1.0.0) remain available under the original import path.
+An embedded, bounded Go scheduler with one-shot, fixed-delay, and fixed-rate schedules. V2 uses `github.com/tauki/scheduledworker/v2` and lives at the repository root. V1 maintenance uses the `release/v1` branch; the published [v1.0.0 sources](https://github.com/tauki/scheduledworker/tree/v1.0.0) remain available under the original import path.
 
 Requires Go 1.25 or newer. The core uses only the standard library. Applications own scheduler lifetime, dependencies, immutable business metadata, and idempotency. State is in memory; crashes lose work, and replicas do not coordinate.
+
+Install v2.0.0:
+
+```sh
+go get github.com/tauki/scheduledworker/v2@v2.0.0
+```
 
 ```go
 s, err := scheduledworker.New(scheduledworker.Config{Workers: 4, MaxSchedules: 1000})
