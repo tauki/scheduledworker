@@ -1,6 +1,6 @@
 # Migrating from v1.0.0 to v2
 
-V1.0.0 remains available at `github.com/tauki/scheduledworker`, with v1 maintenance on `release/v1`. V2 is under development at the repository root, uses `github.com/tauki/scheduledworker/v2`, and requires Go 1.25+. For evaluation, use `go get github.com/tauki/scheduledworker/v2@feat/v2-scheduler` and update imports explicitly. The two import paths can coexist in an application with separate scheduler ownership. There is no transparent Worker facade or automatic converter over opaque v1 options.
+V1.0.0 remains available at `github.com/tauki/scheduledworker`, with v1 maintenance on `release/v1`. V2 is under development at the repository root, uses `github.com/tauki/scheduledworker/v2`, and requires Go 1.25+. For evaluation, replace `COMMIT_SHA` in `go get github.com/tauki/scheduledworker/v2@COMMIT_SHA` with a commit SHA from [PR #18](https://github.com/tauki/scheduledworker/pull/18), then update imports explicitly. The two import paths can coexist in an application with separate scheduler ownership. There is no transparent Worker facade or automatic converter over opaque v1 options.
 
 The completed v1 already fixed batch blocking, recurrence loss after failure, interceptor repeat accounting, and future-work health reporting. Those regression cases inform v2 tests; they are not remaining v1 defects. V1 already counts total retry attempts, counts failed occurrences against finite recurrence, and defaults the first zero-At interval to admission + Every in both submission APIs.
 

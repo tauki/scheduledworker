@@ -23,10 +23,10 @@ Requires Go 1.25 or newer. The core uses only the standard library. Applications
 
 ## Installation
 
-V2 is under development. To evaluate the development branch from an existing Go module:
+V2 is under development in [PR #18](https://github.com/tauki/scheduledworker/pull/18). To evaluate it from an existing Go module, replace `COMMIT_SHA` with a commit SHA from that PR:
 
 ```sh
-go get github.com/tauki/scheduledworker/v2@feat/v2-scheduler
+go get github.com/tauki/scheduledworker/v2@COMMIT_SHA
 ```
 
 Use import path `github.com/tauki/scheduledworker/v2`. Release notes are published in [GitHub Releases](https://github.com/tauki/scheduledworker/releases).
