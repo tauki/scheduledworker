@@ -13,11 +13,11 @@ func TestOutcomesAndErrorPreservation(t *testing.T) {
 	sentinel := errors.New("business error")
 	for _, kind := range []Outcome{Succeeded, Failed, TimedOut, Panicked, Canceled} {
 		synctest.Test(t, func(t *testing.T) {
-			s := newTestScheduler(t, Config{Workers: 1})
+			s := newTestScheduler(t, WithWorkers(1))
 			defer shutdown(t, s)
 			started := make(chan struct{})
 			release := make(chan struct{})
-			h := schedule(t, s, Spec{Timeout: time.Second}, func(ctx context.Context, _ RunInfo) error {
+			h := schedule(t, s, func(ctx context.Context, _ RunInfo) error {
 				close(started)
 				switch kind {
 				case Failed:
@@ -32,7 +32,7 @@ func TestOutcomesAndErrorPreservation(t *testing.T) {
 					return sentinel
 				}
 				return nil
-			})
+			}, WithTimeout(time.Second))
 			<-started
 			if kind == Canceled {
 				_ = h.Cancel(background)
@@ -64,25 +64,25 @@ func TestOutcomesAndErrorPreservation(t *testing.T) {
 }
 func TestTimeoutRetainsSlotAndNilReturnTimesOut(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s := newTestScheduler(t, Config{Workers: 1})
+		s := newTestScheduler(t, WithWorkers(1))
 		defer shutdown(t, s)
 		s.jitter = func(uint64) uint64 { return 0 }
 		release := make(chan struct{})
 		started := make(chan RunInfo, 2)
-		h := schedule(t, s, Spec{Timeout: time.Second, Retry: RetryPolicy{MaxAttempts: 2}}, func(_ context.Context, r RunInfo) error {
+		h := schedule(t, s, func(_ context.Context, r RunInfo) error {
 			started <- r
 			if r.Attempt == 1 {
 				<-release
 			}
 			return nil
-		})
+		}, WithTimeout(time.Second), WithRetry(RetryPolicy{MaxAttempts: 2}))
 		<-started
 		time.Sleep(2 * time.Second)
 		synctest.Wait()
 		if s.Status().RunningAttempts != 1 || h.Status().Counters.AttemptsDispatched != 1 {
 			t.Fatal(s.Status(), h.Status())
 		}
-		b := schedule(t, s, Spec{}, func(context.Context, RunInfo) error { return nil })
+		b := schedule(t, s, func(context.Context, RunInfo) error { return nil })
 		synctest.Wait()
 		select {
 		case <-b.Done():
@@ -104,11 +104,11 @@ func TestPermanentPanicAndRetryWaitingCancellation(t *testing.T) {
 	}
 	for _, mode := range []string{"permanent", "panic", "cancel"} {
 		synctest.Test(t, func(t *testing.T) {
-			s := newTestScheduler(t, Config{Workers: 1})
+			s := newTestScheduler(t, WithWorkers(1))
 			defer shutdown(t, s)
 			s.jitter = func(n uint64) uint64 { return n - 1 }
 			underlying := errors.New("underlying")
-			h := schedule(t, s, Spec{Retry: RetryPolicy{MaxAttempts: 3, InitialBackoff: time.Hour, MaxBackoff: time.Hour}}, func(context.Context, RunInfo) error {
+			h := schedule(t, s, func(context.Context, RunInfo) error {
 				switch mode {
 				case "permanent":
 					return Permanent(underlying)
@@ -116,7 +116,7 @@ func TestPermanentPanicAndRetryWaitingCancellation(t *testing.T) {
 					panic("no retry")
 				}
 				return underlying
-			})
+			}, WithRetry(RetryPolicy{MaxAttempts: 3, InitialBackoff: time.Hour, MaxBackoff: time.Hour}))
 			synctest.Wait()
 			if mode == "cancel" {
 				if h.Status().State != RetryWaiting || h.Status().CurrentRun.Attempt != 1 || s.Status().WaitingRetries != 1 {

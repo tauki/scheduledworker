@@ -13,7 +13,7 @@ import (
 type Scheduler struct {
 	mu       sync.Mutex // arbitrates startup, stop, and the dispatch boundary only
 	state    State
-	cfg      Config
+	cfg      config
 	clock    clock
 	jitter   func(uint64) uint64
 	commands chan command
@@ -24,7 +24,7 @@ type Scheduler struct {
 }
 type command struct {
 	ctx     context.Context
-	spec    Spec
+	spec    spec
 	handler Handler
 	id      ScheduleID
 	cancel  bool
@@ -35,9 +35,18 @@ type response struct {
 	err    error
 }
 
-// New validates configuration without starting goroutines or timers.
-func New(config Config) (*Scheduler, error) {
-	c, err := normalizeConfig(config)
+// New applies options and validates configuration without starting goroutines
+// or timers. With no options it uses 10 workers, 10,000 schedule slots, and no
+// observer. Configuration is immutable after construction.
+func New(opts ...Option) (*Scheduler, error) {
+	var c config
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, fmt.Errorf("%w: option %d is nil", ErrInvalidConfig, i+1)
+		}
+		opt(&c)
+	}
+	c, err := normalizeConfig(c)
 	if err != nil {
 		return nil, err
 	}
@@ -73,12 +82,20 @@ func (s *Scheduler) Start(ctx context.Context) error {
 
 // Schedule commits a registration while Running. An error guarantees that no
 // registration was committed. ctx controls admission only, not job lifetime.
-func (s *Scheduler) Schedule(ctx context.Context, spec Spec, h Handler) (*Handle, error) {
+// With no options the handler is scheduled once, immediately. Options apply in
+// order, with the last value for a setting winning. A nil option is invalid.
+func (s *Scheduler) Schedule(ctx context.Context, h Handler, opts ...ScheduleOption) (*Handle, error) {
 	if ctx == nil {
 		return nil, ErrInvalidArgument
 	}
-	var err error
-	spec, err = normalizeSpec(spec, h)
+	var input spec
+	for i, opt := range opts {
+		if opt == nil {
+			return nil, fmt.Errorf("%w: option %d is nil", ErrInvalidSpec, i+1)
+		}
+		opt(&input)
+	}
+	spec, err := normalizeSpec(input, h)
 	if err != nil {
 		return nil, err
 	}

@@ -9,22 +9,29 @@ import (
 )
 
 type registration struct {
-	h                                *Handle
-	handler                          Handler
-	spec                             Spec
-	base                             instant
-	until                            int64
-	order                            uint64
-	status                           ScheduleStatus
-	tick, retry                      deadline
-	future, pending, open, executing bool
-	nominal, eligible                int64
-	ready                            *list.Element
-	run                              RunInfo
-	lastAttempt                      RunResult
-	control                          context.CancelFunc
-	forced                           bool
-	reason                           FinishReason
+	h           *Handle
+	handler     Handler
+	spec        spec
+	base        instant
+	until       int64
+	order       uint64
+	status      ScheduleStatus
+	tick, retry deadline
+	// These dimensions are independent; update derives the public state.
+	// A tick and a buffered occurrence may coexist with a run in retry backoff.
+	hasNextTick          bool // tick retains the next nominal occurrence.
+	hasPendingOccurrence bool // nominal retains an occurrence awaiting its first dispatch.
+	runOpen              bool // one run spans its attempts, retry backoff, and retry readiness.
+	attemptInFlight      bool // dispatched until completion is processed; implies runOpen.
+	nominal, eligible    int64
+	ready                *list.Element
+	run                  RunInfo
+	lastAttempt          RunResult
+	control              context.CancelFunc
+	// Cancellation clears ticks/pending work. An in-flight attempt retains the
+	// registration until completion; the first termination request fixes reason.
+	terminationRequested bool
+	reason               FinishReason
 }
 
 func (r *registration) wall(at int64) time.Time {
@@ -53,17 +60,17 @@ type coordinator struct {
 
 func newCoordinator(s *Scheduler, ctx context.Context) *coordinator {
 	return &coordinator{s: s, lifetime: ctx, regs: make(map[ScheduleID]*registration),
-		jobs: make(chan assignment, s.cfg.Workers), completions: make(chan completion, s.cfg.Workers),
-		exits: make(chan struct{}, s.cfg.Workers), started: make(chan struct{}), status: Status{State: Running},
+		jobs: make(chan assignment, s.cfg.workers), completions: make(chan completion, s.cfg.workers),
+		exits: make(chan struct{}, s.cfg.workers), started: make(chan struct{}), status: Status{State: Running},
 		stopSignal: s.stop, abortSignal: s.abort, lifetimeSignal: ctx.Done()}
 }
 func (c *coordinator) run() {
 	defer close(c.s.done)
-	for i := 0; i < c.s.cfg.Workers; i++ {
+	for i := 0; i < c.s.cfg.workers; i++ {
 		go worker(c.jobs, c.completions, c.s.clock, c.exits)
 	}
-	if c.s.cfg.Observer != nil {
-		c.obs = newEventDispatcher(c.s.cfg.Observer, c.s.cfg.EventBuffer)
+	if c.s.cfg.observer != nil {
+		c.obs = newEventDispatcher(c.s.cfg.observer, c.s.cfg.eventBuffer)
 		go c.obs.run()
 	}
 	timer := time.NewTimer(time.Hour)
@@ -101,7 +108,7 @@ func (c *coordinator) run() {
 		for i := 0; i < 64 && len(c.timers) > 0 && c.timers[0].at <= now.mono; i++ {
 			c.due(heap.Pop(&c.timers).(*deadline), now)
 		}
-		if !c.stopping && c.status.RunningAttempts < c.s.cfg.Workers && c.ready.Len() > 0 {
+		if !c.stopping && c.status.RunningAttempts < c.s.cfg.workers && c.ready.Len() > 0 {
 			if c.dispatch(c.ready.Front().Value.(*registration)) {
 				c.publish()
 				continue
@@ -114,7 +121,7 @@ func (c *coordinator) run() {
 				c.obs.seal()
 			}
 		}
-		if c.jobsClosed && c.workersExited == c.s.cfg.Workers && (c.obs == nil || c.observerExited) {
+		if c.jobsClosed && c.workersExited == c.s.cfg.workers && (c.obs == nil || c.observerExited) {
 			c.status.State = Stopped
 			c.s.mu.Lock()
 			c.s.state = Stopped
@@ -193,7 +200,7 @@ func (c *coordinator) command(cmd command) {
 		c.status.Rejected++
 		return
 	}
-	if len(c.regs) >= c.s.cfg.MaxSchedules {
+	if len(c.regs) >= c.s.cfg.maxSchedules {
 		cmd.reply <- response{err: ErrCapacity}
 		c.status.Rejected++
 		return
@@ -214,7 +221,7 @@ func (c *coordinator) command(cmd command) {
 	c.sequence++
 	h := &Handle{id: scheduleID(c.sequence), done: make(chan struct{})}
 	h.owner.Store(c.s)
-	r := &registration{h: h, handler: cmd.handler, spec: cmd.spec, base: now, until: until, order: c.sequence, future: true}
+	r := &registration{h: h, handler: cmd.handler, spec: cmd.spec, base: now, until: until, order: c.sequence, hasNextTick: true}
 	r.status = ScheduleStatus{ID: h.id, Name: cmd.spec.Name, State: Scheduled}
 	r.tick = deadline{at: first, order: r.order, r: r, index: -1}
 	r.retry = deadline{order: r.order, r: r, retry: true, index: -1}
@@ -252,8 +259,8 @@ func (c *coordinator) due(d *deadline, now instant) {
 		return
 	}
 	if r.spec.Kind != FixedRate {
-		r.future = false
-		r.pending = true
+		r.hasNextTick = false
+		r.hasPendingOccurrence = true
 		r.nominal = d.at
 		r.eligible = d.at
 		c.queue(r)
@@ -261,10 +268,10 @@ func (c *coordinator) due(d *deadline, now instant) {
 		return
 	}
 	c.advanceRate(r, now.mono)
-	if r.future {
+	if r.hasNextTick {
 		heap.Push(&c.timers, &r.tick)
 	}
-	if r.pending && !r.open {
+	if r.hasPendingOccurrence && !r.runOpen {
 		r.eligible = r.nominal
 		c.queue(r)
 	}
@@ -274,7 +281,7 @@ func (c *coordinator) due(d *deadline, now instant) {
 
 // advanceRate consumes all due ticks in O(1), even across millions of intervals.
 func (c *coordinator) advanceRate(r *registration, now int64) {
-	if !r.future || r.tick.at > now {
+	if !r.hasNextTick || r.tick.at > now {
 		return
 	}
 	end := now
@@ -282,28 +289,28 @@ func (c *coordinator) advanceRate(r *registration, now int64) {
 		end = r.until
 	}
 	if end < r.tick.at {
-		r.future = false
+		r.hasNextTick = false
 		return
 	}
 	steps := (uint64(end) - uint64(r.tick.at)) / uint64(r.spec.Every)
 	latest := int64(uint64(r.tick.at) + steps*uint64(r.spec.Every))
 	count := steps + 1
-	if r.open && r.spec.Overlap == SkipOverlap {
+	if r.runOpen && r.spec.Overlap == SkipOverlap {
 		c.suppressed(r, count, true)
 	} else {
 		suppressed := steps
-		if r.pending {
+		if r.hasPendingOccurrence {
 			suppressed++
 		}
-		r.pending = true
+		r.hasPendingOccurrence = true
 		r.nominal = latest
 		if suppressed > 0 {
 			c.suppressed(r, suppressed, false)
 		}
 	}
 	next, ok := addTime(latest, r.spec.Every)
-	r.future = ok && (r.spec.Until.IsZero() || next <= r.until)
-	if r.future {
+	r.hasNextTick = ok && (r.spec.Until.IsZero() || next <= r.until)
+	if r.hasNextTick {
 		r.tick.at = next
 	}
 }
@@ -317,14 +324,14 @@ func (c *coordinator) suppressed(r *registration, n uint64, skip bool) {
 }
 
 func (c *coordinator) refreshRate(r *registration, through int64) {
-	if r.spec.Kind != FixedRate || !r.future || r.tick.at > through {
+	if r.spec.Kind != FixedRate || !r.hasNextTick || r.tick.at > through {
 		return
 	}
 	if r.tick.index >= 0 {
 		heap.Remove(&c.timers, r.tick.index)
 	}
 	c.advanceRate(r, through)
-	if r.future {
+	if r.hasNextTick {
 		heap.Push(&c.timers, &r.tick)
 	}
 }
@@ -339,15 +346,15 @@ func (c *coordinator) dispatch(r *registration) bool {
 	// Refresh even if a due burst has not yet reached this schedule's node.
 	c.refreshRate(r, now.mono)
 	c.unqueue(r)
-	if !r.open {
+	if !r.runOpen {
 		c.runSequence++
 		r.run = RunInfo{ScheduleID: r.h.id, RunID: runID(c.runSequence), Name: r.spec.Name,
 			Number: r.status.Counters.RunsStarted + 1, Attempt: 1, ScheduledAt: r.wall(r.nominal)}
-		r.open = true
-		r.pending = false
+		r.runOpen = true
+		r.hasPendingOccurrence = false
 		c.count(r, Counters{RunsStarted: 1})
 		if r.spec.MaxRuns > 0 && r.run.Number >= r.spec.MaxRuns {
-			r.future = false
+			r.hasNextTick = false
 			if r.tick.index >= 0 {
 				heap.Remove(&c.timers, r.tick.index)
 			}
@@ -363,7 +370,7 @@ func (c *coordinator) dispatch(r *registration) bool {
 		ctx, cleanup = context.WithTimeout(control, r.spec.Timeout)
 	}
 	r.control = cancel
-	r.executing = true
+	r.attemptInFlight = true
 	c.status.RunningAttempts++
 	c.count(r, Counters{AttemptsDispatched: 1})
 	c.update(r)
@@ -377,7 +384,7 @@ func (c *coordinator) complete(done completion) {
 	// A completion selected alongside a stop signal must not create a retry or
 	// recurrence after the application's lifecycle gate has closed.
 	c.observeStop()
-	r := done.job.r
+	r := done.r
 	// Ticks strictly before this completion belonged to the still-open run,
 	// even when its completion message wins a race with a delayed timer wake.
 	// A tick exactly at completion keeps the documented event-order behavior.
@@ -385,9 +392,9 @@ func (c *coordinator) complete(done completion) {
 		c.refreshRate(r, done.ended.mono-1)
 	}
 	c.status.RunningAttempts--
-	r.executing = false
+	r.attemptInFlight = false
 	r.control = nil
-	r.lastAttempt = RunResult{Run: done.job.info, DispatchedAt: done.job.dispatched.wall,
+	r.lastAttempt = RunResult{Run: done.info, DispatchedAt: done.dispatched.wall,
 		FinishedAt: done.ended.wall, Outcome: done.outcome, Err: done.err}
 	delta := Counters{}
 	if done.outcome == Failed || done.outcome == TimedOut || done.outcome == Panicked {
@@ -401,7 +408,7 @@ func (c *coordinator) complete(done completion) {
 	}
 	c.count(r, delta)
 	c.emit(Event{Kind: AttemptFinished, ScheduleID: r.h.id, Run: r.run, Outcome: done.outcome, Err: done.err, Duration: done.duration, At: done.ended.wall})
-	if !r.forced && !c.stopping && (done.outcome == Failed || done.outcome == TimedOut) &&
+	if !r.terminationRequested && !c.stopping && (done.outcome == Failed || done.outcome == TimedOut) &&
 		r.run.Attempt < r.spec.Retry.MaxAttempts && !done.permanent {
 		cap := retryCap(r.spec.Retry, r.run.Attempt)
 		delay := time.Duration(c.s.jitter(uint64(cap) + 1))
@@ -416,15 +423,15 @@ func (c *coordinator) complete(done completion) {
 		}
 	}
 	c.endRun(r, r.lastAttempt)
-	if !r.forced && !c.stopping && r.spec.Kind == FixedDelay && !c.limitReached(r) {
+	if !r.terminationRequested && !c.stopping && r.spec.Kind == FixedDelay && !c.limitReached(r) {
 		next, ok := addTime(done.ended.mono, r.spec.Every)
-		r.future = ok && (r.spec.Until.IsZero() || next <= r.until)
-		if r.future {
+		r.hasNextTick = ok && (r.spec.Until.IsZero() || next <= r.until)
+		if r.hasNextTick {
 			r.tick.at = next
 			heap.Push(&c.timers, &r.tick)
 		}
 	}
-	if r.pending && !r.forced && !c.stopping {
+	if r.hasPendingOccurrence && !r.terminationRequested && !c.stopping {
 		r.eligible = r.nominal
 		c.queue(r)
 	}
@@ -449,7 +456,7 @@ func (c *coordinator) observeStop() {
 }
 func (c *coordinator) endRun(r *registration, result RunResult) {
 	r.status.LastRun = result
-	r.open = false
+	r.runOpen = false
 	r.run = RunInfo{}
 	delta := Counters{}
 	switch result.Outcome {
@@ -467,11 +474,11 @@ func (c *coordinator) limitReached(r *registration) bool {
 	return r.spec.MaxRuns > 0 && r.status.Counters.RunsStarted >= r.spec.MaxRuns
 }
 func (c *coordinator) maybeFinish(r *registration) {
-	if r.open || r.pending || r.future {
+	if r.runOpen || r.hasPendingOccurrence || r.hasNextTick {
 		return
 	}
 	reason := r.reason
-	if !r.forced {
+	if !r.terminationRequested {
 		switch {
 		case r.spec.Kind == Once:
 			reason = OneShotFinished
@@ -484,22 +491,22 @@ func (c *coordinator) maybeFinish(r *registration) {
 	c.finish(r, reason)
 }
 func (c *coordinator) cancel(r *registration, reason FinishReason, cancelExecution bool) {
-	if !r.forced {
-		r.forced = true
+	if !r.terminationRequested {
+		r.terminationRequested = true
 		r.reason = reason
 	}
-	r.future = false
-	r.pending = false
+	r.hasNextTick = false
+	r.hasPendingOccurrence = false
 	c.removeTimers(r)
 	c.unqueue(r)
-	if r.executing {
+	if r.attemptInFlight {
 		if cancelExecution {
 			r.control()
 		}
 		c.update(r)
 		return
 	}
-	if r.open {
+	if r.runOpen {
 		result := r.lastAttempt
 		result.Outcome = Canceled
 		result.Err = joinContext(context.Canceled, result.Err)
@@ -529,7 +536,7 @@ func (c *coordinator) escalate() {
 	}
 	c.beginStop()
 	for _, r := range c.regs {
-		if r.executing {
+		if r.attemptInFlight {
 			r.control()
 		}
 	}
@@ -555,33 +562,33 @@ func (c *coordinator) update(r *registration) {
 	r.status.NextScheduledAt = time.Time{}
 	r.status.NextAttemptAt = time.Time{}
 	r.status.BufferedAt = time.Time{}
-	if r.future {
+	if r.hasNextTick {
 		r.status.NextScheduledAt = r.wall(r.tick.at)
 	}
-	if r.pending {
+	if r.hasPendingOccurrence {
 		r.status.NextScheduledAt = r.wall(r.nominal)
-		if r.open {
+		if r.runOpen {
 			r.status.BufferedAt = r.wall(r.nominal)
 		}
 	}
 	switch {
-	case r.forced:
+	case r.terminationRequested:
 		r.status.State = Canceling
-	case r.executing:
+	case r.attemptInFlight:
 		r.status.State = Executing
 	case r.ready != nil:
 		r.status.State = Ready
-	case r.open:
+	case r.runOpen:
 		r.status.State = RetryWaiting
 	default:
 		r.status.State = Scheduled
 	}
-	if !r.executing && !r.forced {
-		if r.open {
+	if !r.attemptInFlight && !r.terminationRequested {
+		if r.runOpen {
 			r.status.NextAttemptAt = r.wall(r.eligible)
-		} else if r.pending {
+		} else if r.hasPendingOccurrence {
 			r.status.NextAttemptAt = r.wall(r.nominal)
-		} else if r.future {
+		} else if r.hasNextTick {
 			r.status.NextAttemptAt = r.wall(r.tick.at)
 		}
 	}

@@ -5,32 +5,8 @@ import (
 	"time"
 )
 
-func normalizeConfig(c Config) (Config, error) {
-	if c.Workers < 0 {
-		return c, fmt.Errorf("%w: Workers is negative", ErrInvalidConfig)
-	}
-	if c.MaxSchedules < 0 {
-		return c, fmt.Errorf("%w: MaxSchedules is negative", ErrInvalidConfig)
-	}
-	if c.EventBuffer < 0 {
-		return c, fmt.Errorf("%w: EventBuffer is negative", ErrInvalidConfig)
-	}
-	if c.Workers == 0 {
-		c.Workers = 10
-	}
-	if c.MaxSchedules == 0 {
-		c.MaxSchedules = 10_000
-	}
-	if c.Workers > c.MaxSchedules {
-		return c, fmt.Errorf("%w: Workers exceeds MaxSchedules", ErrInvalidConfig)
-	}
-	if c.EventBuffer == 0 && c.Observer != nil {
-		c.EventBuffer = 256
-	}
-	return c, nil
-}
-func normalizeSpec(s Spec, h Handler) (Spec, error) {
-	bad := func(field string) (Spec, error) { return s, fmt.Errorf("%w: %s", ErrInvalidSpec, field) }
+func normalizeSpec(s spec, h Handler) (spec, error) {
+	bad := func(field string) (spec, error) { return s, fmt.Errorf("%w: %s", ErrInvalidSpec, field) }
 	if h == nil {
 		return bad("Handler is nil")
 	}
@@ -76,7 +52,7 @@ func normalizeSpec(s Spec, h Handler) (Spec, error) {
 	return s, nil
 }
 
-func resolveSpec(s Spec, now instant) (first, until int64, err error) {
+func resolveSpec(s spec, now instant) (first, until int64, err error) {
 	bad := func(field string) (int64, int64, error) {
 		return 0, 0, fmt.Errorf("%w: %s outside elapsed-time range", ErrInvalidSpec, field)
 	}

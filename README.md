@@ -47,7 +47,7 @@ import (
 )
 
 func main() {
-	s, err := sw.New(sw.Config{Workers: 4, MaxSchedules: 1000})
+	s, err := sw.New(sw.WithWorkers(4), sw.WithMaxSchedules(1000))
 	if err != nil {
 		panic(err)
 	}
@@ -62,11 +62,11 @@ func main() {
 		}
 	}()
 
-	h, err := s.Schedule(context.Background(), sw.Spec{Name: "hello"},
+	h, err := s.Schedule(context.Background(),
 		func(ctx context.Context, run sw.RunInfo) error {
 			fmt.Println("hello")
 			return nil
-		})
+		}, sw.WithName("hello"))
 	if err != nil {
 		panic(err)
 	}
@@ -90,33 +90,36 @@ The [package example](example_test.go) is also checked by `go test`. For applica
 
 A **schedule** is a registration retained by the scheduler. A **run** is one occurrence of that schedule. An **attempt** is one handler invocation; retries belong to the same run.
 
-| Kind | First run when `At` is zero | Later runs |
+| Scheduling option | First run when `WithAt` is omitted or zero | Later runs |
 | --- | --- | --- |
-| `Once` (default) | Immediately eligible. | None. |
-| `FixedDelay` | Eligible after `Every`. | Eligible `Every` after the previous run's final attempt returns. |
-| `FixedRate` | Eligible after `Every`. | Follow the original interval anchor; missed ticks follow the overlap policy. |
+| None (one-shot) | Immediately eligible. | None. |
+| `WithFixedDelay(d)` | Eligible after `d`. | Eligible `d` after the previous run's final attempt returns. |
+| `WithFixedRate(d)` | Eligible after `d`. | Follow the original interval anchor; missed ticks follow the overlap policy. |
 
-Set `At: time.Now()` for an immediate first interval run. Recurring schedules need a positive `Every`; set `MaxRuns` to a positive count to finish naturally, or leave it zero for unlimited recurrence. Runs within one schedule never overlap, including retries. Separate schedules can run concurrently.
+Use `WithAt(time.Now())` for an immediate first interval run. Recurring schedules need a positive interval; use `WithMaxRuns(n)` to finish after a positive count, or omit it for unlimited recurrence. Runs within one schedule never overlap, including retries. Separate schedules can run concurrently.
 
 ## Public API and defaults
 
-`New(Config) (*Scheduler, error)` constructs an idle, concrete scheduler. `Start(ctx)` starts it once; that context governs its lifetime. `Schedule(ctx, Spec, Handler) (*Handle, error)` acknowledges admission. `Shutdown(ctx)` initiates terminal shutdown and waits; `Done()` closes after all owned goroutines exit. `Status()` returns a consistent snapshot.
+`New(opts ...Option) (*Scheduler, error)` constructs an idle, concrete scheduler. `New()` uses 10 workers, capacity for 10,000 schedules, and no observer. `Start(ctx)` starts it once; that context governs its lifetime. `Schedule(ctx, handler, opts ...ScheduleOption) (*Handle, error)` acknowledges admission; without options it schedules one immediate run. `Shutdown(ctx)` initiates terminal shutdown and waits; `Done()` closes after all owned goroutines exit. `Status()` returns a consistent snapshot.
+
+Options apply left to right, and the last value for a setting wins. `WithFixedDelay` and `WithFixedRate` each set both the scheduling mode and interval. Validation runs after all options, and the resulting configuration is immutable. Options returned by the helpers can be reused across concurrent calls; avoid mutating a shared options slice while another call reads it. Nil options return a validation error. Constructor `Option` and registration `ScheduleOption` are separate types.
 
 A handle offers `ID`, `Cancel(ctx)`, `Status`, `Done`, and `Wait(ctx)`. `Wait` returns `(Result, nil)` for a finished schedule even if execution failed; inspect `LastRun.Outcome` and `LastRun.Err`. Canceling a wait cancels only that wait. An already-visible final result takes precedence over a canceled wait context. Cancellation after terminal completion is harmless. Handles retain final snapshots without retaining retired handler closures.
 
-| Field | Contract |
+| Option / input | Contract |
 | --- | --- |
-| `Config.Workers`, `MaxSchedules` | Zero selects 10 and 10,000. Negative sizes and workers greater than capacity are invalid. Configuration is immutable. |
-| `Observer`, `EventBuffer` | Nil disables the observer goroutine. Zero buffer with an observer selects 256. Negative size is invalid. |
-| `Spec.Kind` | `Once` (zero), `FixedDelay`, or `FixedRate`. Unknown enum values are invalid. |
-| `At`, `Every` | Zero At means immediate for Once, admission + Every for intervals. Explicit At sets the first nominal time; a past At is allowed. Recurring Every must be positive; Once Every must be zero. Unrepresentable elapsed-time arithmetic is rejected. |
-| `Overlap` | `BufferLatest` by default; `SkipOverlap` is valid only with FixedRate. Neither permits self-overlap. |
-| `MaxRuns` | Once accepts 0/1 and runs once. Recurring zero means unlimited; positive values count first dispatches, including failed runs. Retries and suppressed ticks do not count. |
-| `Until` | Inclusive upper bound on nominal occurrence times. Reject a bound preceding the resolved first occurrence. An in-window occurrence can run late; retries can occur after Until. |
-| `Timeout` | Per-attempt cooperative timeout; zero disables it, negative values are invalid. Timeout retains the slot until return, then classifies even a nil return as TimedOut. |
-| `Retry.MaxAttempts` | Total attempts including the first; 0/1 means one attempt, negative values are invalid. |
+| `WithWorkers(n)`, `WithMaxSchedules(n)` | Omitted or zero selects 10 and 10,000. Negative sizes and workers greater than capacity are invalid. A capacity below 10 also needs an explicit worker count at or below that capacity. |
+| `WithObserver(fn)`, `WithEventBuffer(n)` | Nil callback disables the observer goroutine. Zero buffer with an observer selects 256. Negative size is invalid. |
+| `WithName(name)` | Optional name included in run metadata and snapshots. |
+| `WithAt(at)` | Zero means immediate for a one-shot, admission + interval for recurrence. Explicit time sets the first nominal occurrence; a past time is allowed. Unrepresentable elapsed-time arithmetic is rejected. |
+| `WithFixedDelay(d)`, `WithFixedRate(d)` | Choose recurring scheduling with a positive interval. Omit both for a one-shot. |
+| `WithOverlap(policy)` | `BufferLatest` by default; `SkipOverlap` is valid only with fixed rate. Unknown policies are invalid. Neither permits self-overlap. |
+| `WithMaxRuns(n)` | A one-shot accepts 0/1 and runs once. Recurring zero means unlimited; positive values count first dispatches, including failed runs. Retries and suppressed ticks do not count. |
+| `WithUntil(at)` | Inclusive upper bound on nominal occurrence times. Zero disables it. Reject a bound preceding the resolved first occurrence. An in-window occurrence can run late; retries can occur after the cutoff. |
+| `WithTimeout(d)` | Per-attempt cooperative timeout; zero disables it, negative values are invalid. Timeout retains the slot until return, then classifies even a nil return as TimedOut. |
+| `WithRetry(RetryPolicy{...})` | Omitted means one attempt. MaxAttempts includes the first; 0/1 means one attempt, negative values are invalid. |
 | `InitialBackoff`, `MaxBackoff` | With retries enabled, defaults are 1s and 1m. Nonnegative, normalized maximum >= initial; nonzero backoff without retries is invalid. |
-| Handler/context | Nil handler: `ErrInvalidSpec`; nil context: `ErrInvalidArgument`, with no mutation. |
+| Handler/context/options | Nil handler or schedule option: `ErrInvalidSpec`; nil constructor option: `ErrInvalidConfig`; nil context: `ErrInvalidArgument`, with no mutation. |
 
 Validation errors wrap `ErrInvalidConfig` or `ErrInvalidSpec` and name the field. Before startup admission returns `ErrNotRunning`; after stop begins it returns `ErrStopped`; exhausted admission capacity returns `ErrCapacity`. Repeated Start returns `ErrAlreadyStarted` while running, `ErrStopped` after stop begins. Invalid/canceled startup leaves Created unchanged.
 
@@ -167,7 +170,7 @@ Use status snapshots for metrics and health checks, and observer events for diag
 | `Scheduler.Status()` | Current lifecycle, active/ready/running counts, retry waits, and cumulative counters across schedules. |
 | `Handle.Status()` | One schedule's state, pending times, current run, counters, and latest terminal run. |
 | `Handle.Wait(ctx)` | The schedule's final result, including its finish reason and latest terminal run. |
-| `Config.Observer` | An optional callback receiving run, attempt, retry, suppression, and schedule-finish events. Delivery is asynchronous and best effort. |
+| `WithObserver(fn)` | An optional callback receiving run, attempt, retry, suppression, and schedule-finish events. Delivery is asynchronous and best effort. |
 
 ### Snapshots and counters
 
@@ -204,7 +207,7 @@ go test -run '^$' -fuzz '^FuzzIndexedHeap$' -fuzztime 10s -parallel 2
 go run -race ./examples/logging
 ```
 
-Run `go test -race ./...`, `go vet ./...`, and `go run -race .` separately inside each migration/telemetry example module. Root-module commands exercise v2. CI covers Go 1.25, 1.26, and current stable; migration fixtures compare the root v2 module with the published v1.0.0 dependency. V1's own source and test suite remain on `release/v1`.
+Run `go test -race ./...`, `go vet ./...`, and `go run -race .` separately inside each migration/telemetry example module. Root-module commands exercise v2. CI covers Go 1.25, 1.26, and current stable; timed fuzzing runs on stable, while every version runs the seed corpus. Use Go 1.27+ for timed fuzzing to avoid the older toolchains' [false timeout failure](https://github.com/golang/go/issues/75804). Migration fixtures compare the root v2 module with the published v1.0.0 dependency. V1's own source and test suite remain on `release/v1`.
 
 Tests use Go's `testing/synctest`, explicit barriers, a private wall/elapsed clock seam, heap properties, and fuzzed transition sequences. They cover noncooperative handlers/observers with explicit release, clock jumps, cancellation/admission races, shutdown escalation, retry fairness, exact overlap accounting, a billion missed ticks, resource bounds, terminal cleanup, and idle/saturation behavior. A clean race run is evidence for exercised paths, not proof of arbitrary application handler safety.
 

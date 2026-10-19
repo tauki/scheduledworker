@@ -42,12 +42,16 @@ type assignment struct {
 	canRetry   bool
 }
 type completion struct {
-	job       assignment
-	ended     instant
-	duration  time.Duration
-	outcome   Outcome
-	err       error
-	permanent bool
+	// Do not embed assignment: it would retain invocation-only handler/context
+	// fields while queued or retained by an idle worker.
+	r          *registration
+	info       RunInfo
+	dispatched instant
+	ended      instant
+	duration   time.Duration
+	outcome    Outcome
+	err        error
+	permanent  bool
 }
 
 func worker(jobs <-chan assignment, results chan<- completion, clock clock, exited chan<- struct{}) {
@@ -59,7 +63,7 @@ func worker(jobs <-chan assignment, results chan<- completion, clock clock, exit
 	}
 }
 func invoke(a assignment, clock clock) (c completion) {
-	c.job = a
+	c.r, c.info, c.dispatched = a.r, a.info, a.dispatched
 	start := clock.now()
 	var returned instant
 	handlerReturned := false
@@ -78,12 +82,6 @@ func invoke(a assignment, clock clock) (c completion) {
 			c.err = &PanicError{Value: v, Stack: string(stack[:n])}
 		}
 		a.cleanup()
-		// Completions carry identity/accounting only. An idle worker or a queued
-		// completion must not retain the handler or its context's application data.
-		c.job.handler = nil
-		c.job.ctx = nil
-		c.job.control = nil
-		c.job.cleanup = nil
 	}()
 	c.err = a.handler(a.ctx, a.info)
 	returned = clock.now()

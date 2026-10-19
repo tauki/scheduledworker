@@ -39,6 +39,9 @@ jobs:
           go vet ./...
           go run -race -mod=readonly .
       - name: Fuzz coordinator transitions and indexed heap
+        # Go 1.25/1.26 can report a false timeout (golang/go#75804, fixed in 1.27).
+        # All matrix versions still run the seed corpus through go test above.
+        if: matrix.go-version == 'stable'
         run: |
           go test -run '^$' -fuzz '^FuzzCoordinatorTransitions$' -fuzztime 10s -parallel 2
           go test -run '^$' -fuzz '^FuzzIndexedHeap$' -fuzztime 10s -parallel 2

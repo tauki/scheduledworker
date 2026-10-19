@@ -9,14 +9,18 @@ import (
 )
 
 func ExampleScheduler() {
-	s, err := sw.New(sw.Config{Workers: 4, MaxSchedules: 1000})
+	s, err := sw.New(sw.WithWorkers(4), sw.WithMaxSchedules(1000))
 	if err != nil {
 		panic(err)
 	}
 	if err = s.Start(context.Background()); err != nil {
 		panic(err)
 	}
-	h, err := s.Schedule(context.Background(), sw.Spec{Name: "refresh", Kind: sw.FixedDelay, At: time.Now(), Every: time.Minute, MaxRuns: 1, Retry: sw.RetryPolicy{MaxAttempts: 3}}, func(ctx context.Context, r sw.RunInfo) error { return nil })
+	h, err := s.Schedule(context.Background(),
+		func(ctx context.Context, r sw.RunInfo) error { return nil },
+		sw.WithName("refresh"), sw.WithFixedDelay(time.Minute),
+		sw.WithAt(time.Now()), sw.WithMaxRuns(1),
+		sw.WithRetry(sw.RetryPolicy{MaxAttempts: 3}))
 	if err != nil {
 		panic(err)
 	}

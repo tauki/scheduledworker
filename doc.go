@@ -2,11 +2,15 @@
 // fixed-delay, and fixed-rate work. Construct with New, Start explicitly, and
 // retain registration Handles to cancel work or inspect terminal results.
 //
-// One coordinator owns schedule/run/attempt transitions. At most Workers
-// attempts are dispatched, at most MaxSchedules registrations are retained,
+// New and Schedule accept variadic options; their defaults are a scheduler with
+// 10 workers and 10,000 slots, and one immediate handler invocation respectively.
+// Options are applied and validated before construction or registration.
+//
+// One coordinator owns schedule/run/attempt transitions. WithWorkers bounds
+// dispatched attempts, WithMaxSchedules bounds retained registrations,
 // and each registration has one open run, one pending occurrence, at most two
 // indexed deadlines, and one ready-list entry. Retries never overlap their run.
-// New starts no goroutine. Running uses Workers workers, one coordinator, and
+// New starts no goroutine. Running uses the configured workers, one coordinator, and
 // optionally one observer dispatcher; no goroutine is created per registration.
 //
 // Schedule's context controls admission only. Start's context owns the entire
@@ -28,8 +32,8 @@
 // Timing is elapsed-time based, not calendar scheduling. Eligibility is a lower
 // bound. Wall times are resolved once on admission; later clock adjustments do
 // not retarget registrations. Fixed-rate missed ticks coalesce to the latest
-// permitted tick. Until bounds nominal times inclusively, not retries or actual
-// execution times. MaxRuns counts first dispatches, including failed runs.
+// permitted tick. WithUntil bounds nominal times inclusively, not retries or actual
+// execution times. WithMaxRuns counts first dispatches, including failed runs.
 //
 // Snapshots and final handle results are authoritative within the process.
 // Observer events are ordered, asynchronous, bounded, and best effort. Never

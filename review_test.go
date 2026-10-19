@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func admitForReview(t *testing.T, c *coordinator, spec Spec, h Handler) *Handle {
+func admitForReview(t *testing.T, c *coordinator, spec spec, h Handler) *Handle {
 	t.Helper()
 	spec, err := normalizeSpec(spec, h)
 	if err != nil {
@@ -28,12 +28,12 @@ func admitForReview(t *testing.T, c *coordinator, spec Spec, h Handler) *Handle 
 func TestCompletionBeforeDelayedFixedRateTickProcessing(t *testing.T) {
 	for _, policy := range []OverlapPolicy{BufferLatest, SkipOverlap} {
 		t.Run(map[OverlapPolicy]string{BufferLatest: "buffer", SkipOverlap: "skip"}[policy], func(t *testing.T) {
-			s, _ := New(Config{Workers: 1})
+			s, _ := New(WithWorkers(1))
 			s.state = Running
 			clock := &manualClock{}
 			s.clock = clock
 			c := newCoordinator(s, background)
-			h := admitForReview(t, c, Spec{Kind: FixedRate, At: clock.now().wall, Every: 5 * time.Second, MaxRuns: 2, Overlap: policy}, func(context.Context, RunInfo) error { clock.at = int64(16 * time.Second); return nil })
+			h := admitForReview(t, c, spec{Kind: FixedRate, At: clock.now().wall, Every: 5 * time.Second, MaxRuns: 2, Overlap: policy}, func(context.Context, RunInfo) error { clock.at = int64(16 * time.Second); return nil })
 			c.due(heap.Pop(&c.timers).(*deadline), clock.now())
 			c.dispatch(c.regs[h.ID()])
 			done := invoke(<-c.jobs, clock)
@@ -60,11 +60,11 @@ func TestTimeoutClassificationDoesNotDependOnTimerCallback(t *testing.T) {
 	clock := &manualClock{}
 	// Use dispatch to set timeout metadata, then advance only the private elapsed
 	// clock inside the handler; the real context timer has not fired yet.
-	s, _ := New(Config{Workers: 1})
+	s, _ := New(WithWorkers(1))
 	s.state = Running
 	s.clock = clock
 	c := newCoordinator(s, background)
-	h := admitForReview(t, c, Spec{Timeout: time.Second}, func(context.Context, RunInfo) error { clock.at = int64(2 * time.Second); return nil })
+	h := admitForReview(t, c, spec{Timeout: time.Second}, func(context.Context, RunInfo) error { clock.at = int64(2 * time.Second); return nil })
 	c.due(heap.Pop(&c.timers).(*deadline), clock.now())
 	c.dispatch(c.regs[h.ID()])
 	done := invoke(<-c.jobs, clock)
@@ -81,19 +81,19 @@ func (e *blockingAsError) As(any) bool { close(e.entered); <-e.release; return f
 
 func TestApplicationErrorClassificationCannotBlockCoordinator(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s := newTestScheduler(t, Config{Workers: 2})
+		s := newTestScheduler(t, WithWorkers(2))
 		defer shutdown(t, s)
 		e := &blockingAsError{entered: make(chan struct{}), release: make(chan struct{})}
-		h := schedule(t, s, Spec{Retry: RetryPolicy{MaxAttempts: 2}}, func(_ context.Context, r RunInfo) error {
+		h := schedule(t, s, func(_ context.Context, r RunInfo) error {
 			if r.Attempt == 1 {
 				return e
 			}
 			return nil
-		})
+		}, WithRetry(RetryPolicy{MaxAttempts: 2}))
 		<-e.entered
 		ctx, cancel := context.WithTimeout(background, time.Second)
 		defer cancel()
-		other, err := s.Schedule(ctx, Spec{}, func(context.Context, RunInfo) error { return nil })
+		other, err := s.Schedule(ctx, func(context.Context, RunInfo) error { return nil })
 		close(e.release)
 		if err != nil {
 			t.Fatalf("application error blocked unrelated admission: %v", err)
@@ -104,13 +104,13 @@ func TestApplicationErrorClassificationCannotBlockCoordinator(t *testing.T) {
 }
 
 func TestImmediateStopDropsTerminationEventsBeforeDelivery(t *testing.T) {
-	s, _ := New(Config{Workers: 1})
+	s, _ := New(WithWorkers(1))
 	s.state = Running
 	s.clock = &manualClock{}
 	c := newCoordinator(s, background)
 	c.obs = newEventDispatcher(func(context.Context, Event) { t.Error("immediate stop delivered an event") }, 16)
 	for i := 0; i < 4; i++ {
-		admitForReview(t, c, Spec{At: time.Unix(0, int64(time.Hour))}, func(context.Context, RunInfo) error { return nil })
+		admitForReview(t, c, spec{At: time.Unix(0, int64(time.Hour))}, func(context.Context, RunInfo) error { return nil })
 	}
 	s.requestStop(true)
 	c.observeStop()
@@ -129,15 +129,15 @@ func (*panickingErrorMethods) As(any) bool   { panic("As panic") }
 
 func TestErrorMethodPanicsStayWithinWorkerRecovery(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s := newTestScheduler(t, Config{Workers: 1})
+		s := newTestScheduler(t, WithWorkers(1))
 		defer shutdown(t, s)
-		h := schedule(t, s, Spec{Retry: RetryPolicy{MaxAttempts: 3}}, func(context.Context, RunInfo) error { return &panickingErrorMethods{} })
+		h := schedule(t, s, func(context.Context, RunInfo) error { return &panickingErrorMethods{} }, WithRetry(RetryPolicy{MaxAttempts: 3}))
 		r := result(t, h)
 		var pe *PanicError
 		if r.LastRun.Outcome != Panicked || r.Counters.AttemptsDispatched != 1 || !errors.As(r.LastRun.Err, &pe) {
 			t.Fatal(r)
 		}
-		other := schedule(t, s, Spec{}, func(context.Context, RunInfo) error { return nil })
+		other := schedule(t, s, func(context.Context, RunInfo) error { return nil })
 		result(t, other)
 	})
 	err := &panickingErrorMethods{}
@@ -155,10 +155,10 @@ func TestWrappedPermanentErrorsNeverRetry(t *testing.T) {
 		func(err error) error { return errors.Join(errors.New("other"), Permanent(err)) },
 	} {
 		synctest.Test(t, func(t *testing.T) {
-			s := newTestScheduler(t, Config{Workers: 1})
+			s := newTestScheduler(t, WithWorkers(1))
 			defer shutdown(t, s)
 			sentinel := errors.New("permanent")
-			h := schedule(t, s, Spec{Retry: RetryPolicy{MaxAttempts: 3}}, func(context.Context, RunInfo) error { return wrap(sentinel) })
+			h := schedule(t, s, func(context.Context, RunInfo) error { return wrap(sentinel) }, WithRetry(RetryPolicy{MaxAttempts: 3}))
 			r := result(t, h)
 			if r.Counters.AttemptsDispatched != 1 || r.LastRun.Outcome != Failed || !errors.Is(r.LastRun.Err, sentinel) {
 				t.Fatal(r)
@@ -169,12 +169,12 @@ func TestWrappedPermanentErrorsNeverRetry(t *testing.T) {
 
 func TestFixedRateTickExactlyAtCompletionAllowsBothEventOrders(t *testing.T) {
 	for _, tickFirst := range []bool{false, true} {
-		s, _ := New(Config{Workers: 1})
+		s, _ := New(WithWorkers(1))
 		s.state = Running
 		clock := &manualClock{}
 		s.clock = clock
 		c := newCoordinator(s, background)
-		h := admitForReview(t, c, Spec{Kind: FixedRate, At: clock.now().wall, Every: 5 * time.Second, Overlap: SkipOverlap}, func(context.Context, RunInfo) error { clock.at = int64(5 * time.Second); return nil })
+		h := admitForReview(t, c, spec{Kind: FixedRate, At: clock.now().wall, Every: 5 * time.Second, Overlap: SkipOverlap}, func(context.Context, RunInfo) error { clock.at = int64(5 * time.Second); return nil })
 		c.due(heap.Pop(&c.timers).(*deadline), clock.now())
 		c.dispatch(c.regs[h.ID()])
 		done := invoke(<-c.jobs, clock)

@@ -12,14 +12,6 @@ type ScheduleID string
 // RunID identifies an occurrence across all its attempts within one scheduler.
 type RunID string
 
-// Config is immutable after construction. Zero sizes select the documented defaults.
-type Config struct {
-	Workers      int      // 0 selects 10; bounds dispatched attempts until return.
-	MaxSchedules int      // 0 selects 10,000; includes canceling registrations.
-	Observer     Observer // nil disables asynchronous event delivery.
-	EventBuffer  int      // 0 selects 256 when Observer is set.
-}
-
 // Handler must return or panic to release its worker slot. Cancellation is cooperative.
 type Handler func(context.Context, RunInfo) error
 
@@ -40,8 +32,8 @@ const (
 	SkipOverlap
 )
 
-// Spec describes an immutable registration. Until bounds nominal times, not retries.
-type Spec struct {
+// spec is copied into a registration after its options are applied and validated.
+type spec struct {
 	Name    string
 	Kind    Kind
 	At      time.Time     // First nominal time; zero means now, or now+Every for intervals.

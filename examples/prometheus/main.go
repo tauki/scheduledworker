@@ -27,7 +27,7 @@ func (c collector) Collect(ch chan<- prom.Metric) {
 	ch <- prom.MustNewConstMetric(c.active, prom.GaugeValue, float64(s.ActiveSchedules))
 }
 func main() {
-	s, err := sw.New(sw.Config{})
+	s, err := sw.New()
 	if err != nil {
 		panic(err)
 	}
@@ -36,7 +36,7 @@ func main() {
 	}
 	registry := prom.NewRegistry()
 	registry.MustRegister(collector{s, prom.NewDesc("scheduledworker_v2_runs_succeeded_total", "Terminal successful runs.", nil, nil), prom.NewDesc("scheduledworker_v2_attempts_failed_total", "Failed attempts including timeout and panic; excluding cancellation.", nil, nil), prom.NewDesc("scheduledworker_v2_active_schedules", "Retained registrations, including canceling handlers.", nil, nil)})
-	h, err := s.Schedule(context.Background(), sw.Spec{}, func(context.Context, sw.RunInfo) error { return nil })
+	h, err := s.Schedule(context.Background(), func(context.Context, sw.RunInfo) error { return nil })
 	if err != nil {
 		panic(err)
 	}

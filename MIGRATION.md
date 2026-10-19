@@ -8,10 +8,10 @@ The completed v1 already fixed batch blocking, recurrence loss after failure, in
 
 | V1 | V2 / required action |
 | --- | --- |
-| `Worker`, `New()`, `Start()` | Concrete `*Scheduler`, `New(Config)` and `Start(ctx)` with checked errors. Consumers define narrow interfaces. Repeated startup is an error. |
-| `SetMaxWorker` | Immutable `Config.Workers`; invalid sizes return errors rather than normalizing. |
+| `Worker`, `New()`, `Start()` | Concrete `*Scheduler`, `New(...Option)` and `Start(ctx)` with checked errors. New() selects defaults. Consumers define narrow interfaces. Repeated startup is an error. |
+| `SetMaxWorker` | `WithWorkers(n)` at construction; immutable afterward. Invalid sizes return errors rather than normalizing. |
 | `SetDuration` | Removed. One next-deadline timer drives scheduling. |
-| `Submit(Task, ...TaskOpt)`, `SubmitWithOptions(Task, ...Option)` | `Schedule(ctx, Spec, Handler)` after successful Start, with bounded capacity and acknowledged admission. An error guarantees no committed registration. |
+| `Submit(Task, ...TaskOpt)`, `SubmitWithOptions(Task, ...Option)` | `Schedule(ctx, handler, ...ScheduleOption)` after successful Start, with bounded capacity and acknowledged admission. An error guarantees no committed registration. |
 | `Task.Fn`, `Task.FnErr` | One `Handler(context.Context, RunInfo) error`. Choose one deliberately; wrapping `func()` cannot make its work cancelable. Legacy FnErr precedence disappears. |
 | `WithContext`, `Spec.Context` | Explicit application ownership and Handle.Cancel. Schedule's context controls admission only; it is not a per-registration parent. |
 | `WithDeadline`, `Spec.Deadline` | No equivalent absolute registration deadline. Per-attempt Timeout or a handler-only wrapper changes outcome/retry/recurrence semantics. |
@@ -27,12 +27,12 @@ Do not add a hidden watcher goroutine per job and claim the core's fixed-gorouti
 
 ## Scheduling and counts
 
-| Resolved v1 intent | V2 Spec |
+| Resolved v1 intent | V2 scheduling options |
 | --- | --- |
-| One-shot with Repeat 0 or 1 and no interval | `Kind: Once`, optional same At; zero At is immediate. |
-| Unlimited positive interval | `Kind: FixedDelay, Every: d, MaxRuns: 0`. |
-| Finite positive interval, n > 0 | Recurring Kind, `Every: d, MaxRuns: uint64(n)` after validating n. |
-| Fixed rate | `Kind: FixedRate` with the interval/count; BufferLatest is default, SkipOverlap is an explicit alternative. |
+| One-shot with Repeat 0 or 1 and no interval | Omit interval options; use WithAt for an explicit time. Zero/omitted time is immediate. |
+| Unlimited positive interval | `WithFixedDelay(d)`; omit WithMaxRuns. |
+| Finite positive interval, n > 0 | `WithFixedDelay(d), WithMaxRuns(uint64(n))` after validating n. |
+| Fixed rate | `WithFixedRate(d)` with optional count; BufferLatest is default, WithOverlap(SkipOverlap) is an explicit alternative. |
 | `Every(d), Repeat(0)` | One delayed Once; resolve intended At as admission + d when no explicit At exists. Recurring MaxRuns 0 would incorrectly mean unlimited. |
 | `Repeat(n > 1)` without Every | Unsupported. V2 rejects recurring zero intervals. A handler loop or multiple one-shots changes identities, ordering, cancellation, retry, and accounting. |
 
@@ -45,13 +45,15 @@ err := w.SubmitWithOptions(v1.Task{FnErr: refresh},
     v1.WithRetry(v1.RetryPolicy{MaxAttempts: 3}))
 
 // V2: after checking New and Start errors.
-h, err := s.Schedule(admissionCtx, v2.Spec{
-    Kind: v2.FixedDelay, Every: 30*time.Second, MaxRuns: 3,
-    Retry: v2.RetryPolicy{MaxAttempts: 3},
-}, func(ctx context.Context, run v2.RunInfo) error { return refresh(ctx) })
+h, err := s.Schedule(admissionCtx,
+    func(ctx context.Context, run v2.RunInfo) error { return refresh(ctx) },
+    v2.WithFixedDelay(30*time.Second), v2.WithMaxRuns(3),
+    v2.WithRetry(v2.RetryPolicy{MaxAttempts: 3}))
 ```
 
-Both count failed runs and keep retry attempts within one run. Positive limits bound actual first dispatches, not guaranteed executions before cancellation/shutdown. Set an explicit `At: time.Now()` for an immediate first interval in either version.
+V2 options apply left to right, and the last value for each setting wins. WithFixedDelay and WithFixedRate each replace the mode and interval. Validation happens after all options. Constructor Option and ScheduleOption are distinct; v1 option types cannot be passed to either.
+
+Both count failed runs and keep retry attempts within one run. Positive limits bound actual first dispatches, not guaranteed executions before cancellation/shutdown. Use v2.WithAt(time.Now()) for an immediate first v2 interval; resolve v1 At explicitly as before.
 
 Fixed delay starts after the final attempt returns, for every terminal outcome. Fixed rate anchors nominal times and never self-overlaps, including retry waiting. Under global saturation, v2 refreshes a ready occurrence to the latest eligible tick immediately before dispatch. Ready positions are preserved by coalescing; new eligibility and retries join the FIFO tail. V2 promises equal-eligibility admission order; v1 makes no equal-time ordering promise.
 
@@ -64,9 +66,9 @@ Until changes from v1 transformed/retry eligibility to an inclusive v2 nominal o
 | `RetryPolicy`, `WithRetry`, `ExponentialBackoff` | Fixed-data RetryPolicy. MaxAttempts remains total attempts. Capped exponential full jitter replaces arbitrary factor/backoff callbacks, custom zero-delay policy, helper ±20% jitter, and optional panic retry. |
 | Error classification | Ordinary errors retry within budget; `Permanent(err)` preserves the error chain and prevents retry. |
 | `PanicError` | Match the type from the correct major import. Stack changes from `[]byte` to `string`, capped at 16 KiB. Panics never retry in v2. |
-| `WithTimeout` | Spec.Timeout retains capacity until return; v2 records TimedOut even on nil return after expiry. V1's nil return counts success. |
+| `WithTimeout` | WithTimeout retains capacity until return; v2 records TimedOut even on nil return after expiry. V1's nil return counts success. |
 | Task.At during retries, Spec.Attempt | RunInfo adds ScheduleID, stable RunID/Number/ScheduledAt, and Attempt. Retries do not overwrite nominal ScheduledAt. |
-| Spec/NewSpec, Option/OptionFunc, Task.Spec | Immutable Spec, RunInfo, snapshots and results; no mutable live task/plugin surface. |
+| Spec/NewSpec, Option/OptionFunc, Task.Spec | ScheduleOption helpers build a private immutable registration; RunInfo, snapshots and results describe it. No mutable live task/plugin surface. |
 | `ErrStopped`, `ErrInvalidTask`, `ErrNextCalledTwice` | ErrStopped; separate ErrInvalidConfig/Spec/Argument plus capacity/lifecycle sentinels. Continuation misuse disappears with scheduling middleware. Use errors.Is. |
 
 At return, panic wins over control cancellation, which wins over timeout, then returned error, then success. Context outcome errors match context.Canceled/DeadlineExceeded and preserve distinct handler errors. A nil-returning handler may have performed effects before being classified canceled/timed out. Cancellation during retry waiting preserves the previous attempt error in the canceled run result without a fictitious additional attempt. Retrying a timed-out noncooperative handler waits for its actual return first.
