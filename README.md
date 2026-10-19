@@ -1,180 +1,103 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" 
-            srcset="https://user-images.githubusercontent.com/12199227/174419794-a099417b-7447-4a60-a45e-d6f5d9d1a4a6.png"
-            height="250" width="250">
-    <source media="(prefers-color-scheme: light)" 
-            srcset="https://user-images.githubusercontent.com/12199227/174419793-2678aca5-fc77-4538-b53d-25fb71804f9a.png"
-            height="250" width="250">
-    <img alt="logo" 
-         src="https://user-images.githubusercontent.com/12199227/174419789-aa234491-5eae-4247-979a-300efec24e9d.png"
-         height="250" width="250">
-  </picture>
-</p>
+# ScheduledWorker v2
 
-![main](https://github.com/tauki/scheduledworker/actions/workflows/main.yaml/badge.svg)
-[![Go Reference](https://pkg.go.dev/badge/github.com/tauki/scheduledworker.svg)](https://pkg.go.dev/github.com/tauki/scheduledworker)
+An embedded, bounded Go scheduler with one-shot, fixed-delay, and fixed-rate schedules. V2 uses `github.com/tauki/scheduledworker/v2` and lives at the repository root. V1 maintenance uses the `release/v1` branch; the published [v1.0.0 sources](https://github.com/tauki/scheduledworker/tree/v1.0.0) remain available under the original import path.
 
-# ScheduledWorker
+Requires Go 1.25 or newer. The core uses only the standard library. Applications own scheduler lifetime, dependencies, immutable business metadata, and idempotency. State is in memory; crashes lose work, and replicas do not coordinate.
 
-An embedded Go library for one-shot, fixed-delay, and fixed-rate function scheduling. Tasks live in memory, execute when eligible worker slots are available, and can repeat a finite number of times or until a cutoff.
-
-Requires Go 1.20 or newer and has no external dependencies. Release notes are published with [GitHub Releases](https://github.com/tauki/scheduledworker/releases).
-
-## Quick start
-
-```go
-package main
-
-import (
-    "fmt"
-    "time"
-
-    sw "github.com/tauki/scheduledworker"
-)
-
-func main() {
-    w := sw.New().SetMaxWorker(4).Start()
-    w.Submit(sw.Task{
-        At: time.Now().Add(100 * time.Millisecond),
-        Fn: func() { fmt.Println("work completed") },
-    })
-    w.Stop() // drains the scheduled task and waits for its function
-}
-```
-
-New creates no goroutine or timer until Start. Tasks can be submitted before Start. Start is idempotent; a stopped worker cannot restart.
-
-## Pausing and resuming
-
-`Pause()` suspends new dispatch and retains queued work. Submissions remain accepted, while already-dispatched functions and their callbacks continue. `Resume()` allows queued work to dispatch again:
-
-```go
-w := sw.New().Pause().Start()
-w.Submit(sw.Task{Fn: refresh}) // retained until resumed or drained by Stop
-w.Resume()
-```
-
-Both methods are idempotent and can be called from a handler or callback. Pause returns promptly; an invocation dispatched before it returns can still enter its function afterward. Pause does not cancel contexts or wait for running work.
-
-Eligibility times, retry state, and repeat counts are retained. Overdue work becomes eligible on resume under the normal concurrency/key limits; future work still waits until due. Active functions can queue their next retry or occurrence while paused. Intervals are not shifted by the pause; fixed-delay and fixed-rate rescheduling keep their existing rules.
-
-Before Start, Pause/Resume only change the initial dispatch gate. Resume does not start a worker, and repeated Start does not implicitly resume one. `Status.Paused` reports the gate independently of in-flight work; `Status.Running` can remain true while paused. Stop/StopCtx remain permanent shutdown, override pause for draining, and cannot be undone by Resume.
-
-## Repeating work
-
-```go
-w.Submit(sw.Task{Fn: refresh}, sw.Every(time.Minute), sw.Repeat(3))
-```
-
-This waits one minute before the first execution, then waits one minute after each function completes. It executes three times in total if the worker is not stopped first. To run immediately before repeating, supply `At: time.Now()`.
-
-- `Every(d)` requires d > 0 and implies unlimited repetition unless a nonzero Repeat value has already been supplied.
-- `Repeat(n)` counts the first execution, including a recovered panic. Zero means the default one-shot behavior; `Forever` (-1) is the only supported negative count.
-- `RepeatForever()` requires a positive Every interval. Finite repeats without Every execute again as soon as a slot is available.
-- `Until(t)` is an inclusive bound on scheduled times, including the initial At. A zero time removes the bound. It does not terminate a function or impose a latest actual start time.
-- Options apply left to right. Put `Repeat(n)` after `Every(d)` to make the finite count explicit.
-
-Recurring executions of one submitted task never overlap. Independent submissions of the same function can overlap. Legacy options provide fixed-delay scheduling. Extended options add fixed-rate execution and daily business-hour filters.
-
-## Execution and shutdown guarantees
-
-- At is the earliest eligibility time, not an execution deadline. Capacity, OS scheduling, and handler duration can delay execution. Equal deadlines have no guaranteed relative order.
-- A zero At means immediately eligible, or now + Every when an interval is supplied.
-- The default concurrency limit is ten. SetMaxWorker can change it safely at runtime; nonpositive values normalize to one. Lowering it does not interrupt existing invocations.
-- Panics from Fn or FnErr are recovered and repeat accounting continues. Extended options provide retries and error/panic hooks; legacy submissions do not retry automatically. Functions must return or panic for their execution slots to be released.
-- Stop immediately closes admission and prevents further repeats/retries. It drains previously queued tasks at their scheduled times and waits for dispatched functions and completion callbacks, so far-future tasks or nonreturning functions can delay it indefinitely. Tasks configured with WithCancelOnStop receive cooperative context cancellation.
-- Stop before Start discards pending work and returns. Repeated/concurrent Stop calls wait for the same completion; later Submit calls are ignored. Submissions without either handler are ignored.
-- Call Stop from the owning application. Calling it from an executing function waits on itself. Functions should not wait for other work queued behind the same saturated worker.
-- Tasks and queue memory are unbounded and process-local. Process termination loses queued work. Multiple processes do not coordinate their schedules.
-
-SetDuration retains the idle wake interval setting (positive durations only). Scheduled deadlines and new submissions wake independently; it is not an interval added to every task's start latency.
-
-## Custom queues
-
-SetQueue replaces the queued-task implementation and transfers pending tasks. Replacements after Stop begins are ignored. The built-in priority queue orders by Task.At. Its empty Pop/Peek return nil; Push requires a non-nil task and panics on nil. Installed queues belong exclusively to the worker: do not mutate them directly while it is running. Queue methods must be prompt, internally consistent, and must not call worker methods. Prefilled tasks without options execute once.
-
-## Examples and checks
+Install v2.0.0:
 
 ```sh
-go run ./examples/basic
-go run ./examples/periodic
-go run ./examples/extended
-go test ./...
-go test -race ./...
-go vet ./...
+go get github.com/tauki/scheduledworker/v2@v2.0.0
 ```
-
-The basic, periodic, and extended examples use only the standard library. Executable package examples also run with the test suite.
-
-## Context-aware tasks and options
-
-All features are available through `New()` and the `Worker` interface. With the worker running, submit an error-returning handler using the `sw` import alias above (`context` and `time` are also required):
 
 ```go
-err := w.SubmitWithOptions(sw.Task{
-    FnErr: func(ctx context.Context) error {
-        return refresh(ctx)
-    },
-},
-    sw.WithEvery(time.Minute),
-    sw.WithRepeat(3),
-    sw.WithRetry(sw.RetryPolicy{
-        MaxAttempts: 3,
-        Backoff: sw.ExponentialBackoff(time.Second, 2, time.Minute, true),
-    }),
-    sw.WithTimeout(30*time.Second),
-    sw.WithCancelOnStop(),
-)
-if err != nil {
-    // Handle invalid configuration, middleware errors, or closed admission.
-    panic(err)
-}
+s, err := scheduledworker.New(scheduledworker.Config{Workers: 4, MaxSchedules: 1000})
+if err != nil { return err }
+if err = s.Start(context.Background()); err != nil { return err }
+defer s.Shutdown(context.Background())
+
+h, err := s.Schedule(ctx, scheduledworker.Spec{
+    Name: "refresh",
+    Kind: scheduledworker.FixedDelay,
+    Every: time.Minute,
+    Timeout: 15 * time.Second,
+    Retry: scheduledworker.RetryPolicy{MaxAttempts: 3},
+}, func(ctx context.Context, run scheduledworker.RunInfo) error {
+    return refresh(ctx)
+})
+if err != nil { return err }
+// Keep h to call Cancel, Status, or Wait. ctx controlled admission only.
+_ = h
 ```
 
-`SubmitWithOptions` accepts exactly one of `Fn` and `FnErr`. It returns `ErrInvalidTask` for invalid settings and `ErrStopped` after shutdown starts. Enqueue middleware can drop a task; a drop or an initial time beyond `Until` returns nil without admission. `Task.At` takes precedence over `Spec.At`. A zero time uses now + Every. `OptionFunc` supports custom configuration, and options apply left to right. Configuration maps/slices are copied at admission; objects inside `Attrs` remain caller-owned and must be immutable or synchronized.
+Use import `github.com/tauki/scheduledworker/v2`. The compile-checked [package example](example_test.go) shows a complete finite lifecycle. For application shutdown, use a bounded shutdown context; its expiration cancels all outstanding execution and observation. Shutdown does not execute undispatched future jobs.
 
-The legacy `Submit` also accepts `FnErr`, using a background context; if both handlers are present there, `FnErr` takes precedence. New code should use `SubmitWithOptions` for validation, deadlines and observation.
+## Public API and defaults
 
-| Feature | API and guarantee |
+`New(Config) (*Scheduler, error)` constructs an idle, concrete scheduler. `Start(ctx)` starts it once; that context governs its lifetime. `Schedule(ctx, Spec, Handler) (*Handle, error)` acknowledges admission. `Shutdown(ctx)` initiates terminal shutdown and waits; `Done()` closes after all owned goroutines exit. `Status()` returns a consistent snapshot.
+
+A handle offers `ID`, `Cancel(ctx)`, `Status`, `Done`, and `Wait(ctx)`. `Wait` returns `(Result, nil)` for a finished schedule even if execution failed; inspect `LastRun.Outcome` and `LastRun.Err`. Canceling a wait cancels only that wait. An already-visible final result takes precedence over a canceled wait context. Cancellation after terminal completion is harmless. Handles retain final snapshots without retaining retired handler closures.
+
+| Field | Contract |
 | --- | --- |
-| Recurrence | `WithEvery`, `WithRepeat`, `WithUntil`, `WithFixedDelay`, `WithFixedRate`. Repeat counts occurrences, including exhausted failures; retry attempts do not consume extra occurrences. Until bounds queued eligibility, including transformed times and retries. |
-| Fixed rate | Uses the original time grid and never overlaps its own registration. After a slow occurrence, the latest missed tick is retained; earlier missed ticks are discarded. Finishing at t=36 for a 10-second schedule anchored at t=0 makes t=30 eligible next. |
-| Retries | `MaxAttempts` includes the initial attempt; 0/1 disables retry. `Backoff` receives retry numbers starting at 1. A retry waits in the queue and uses the normal concurrency/key limits. Exhaustion permits the next recurring occurrence. Negative custom delays normalize to zero. A backoff panic is reported to OnError and exhausts the current occurrence. Handler panics retry only with `RetryOnPanic`. |
-| Cancellation | `WithContext`, `WithTimeout`, `WithDeadline`, `WithCancelOnStop`. Timeout and deadline both apply; the earlier bound wins. Handlers must observe cancellation and return an error to report failure; returning nil after a deadline is counted as success. A canceled parent context ends future recurrence/retries, but already queued invocations can still enter with a canceled context. |
-| Hooks | `WithOnStart`, `WithOnComplete`, `WithOnError`, `WithOnPanic`. Start and outcome hooks run for each attempt with detached task snapshots; retained attempt metadata stays unchanged as retries advance. OnError also reports retry/reschedule policy errors. Hook/collector panics are isolated and counted by `Status.CallbackPanicked`. |
-| Middleware | `WithOnEnqueue`, `WithOnRun`, `WithOnReschedule`. Registration order determines wrapping order. Call `next` synchronously zero or one times; repeated calls return `ErrNextCalledTwice`. Run middleware wraps the handler. Scheduling middleware may defer eligibility or drop work; it cannot bypass Repeat/Until or advance a time before the scheduler's eligibility. |
-| Jitter | `WithJitter(d)` adds a random delay in [0,d) to initial and recurring eligibility. Zero disables jitter; negative values are invalid. Retry delays use their own backoff. |
-| Business hours | `WithBusinessHours("Europe/Oslo", 9, 17)` defers eligibility into a daily window. Zones/hours are validated; calendar arithmetic finds the earliest eligible instant across timezone transitions, including partial-hour gaps and repeated times. Weekends are included. This filters eligibility rather than guaranteeing actual execution occurs inside the window. |
-| Keyed exclusion | `WithKeyLock("customer-id")` serializes tasks sharing a key within one worker. Contention waits before dispatch, leaving slots free for other keys. Idle keys are removed. |
-| Metadata | `WithLabels`, `WithAttributes`; hooks/middleware can read a defensive `task.Spec()` snapshot with the current attempt number. |
-| Metrics | `WithMetrics(MetricsCollector)` and `MetricsFuncs` adapt application-owned backends without a core dependency. Collectors compose independently of hook option order. |
+| `Config.Workers`, `MaxSchedules` | Zero selects 10 and 10,000. Negative sizes and workers greater than capacity are invalid. Configuration is immutable. |
+| `Observer`, `EventBuffer` | Nil disables the observer goroutine. Zero buffer with an observer selects 256. Negative size is invalid. |
+| `Spec.Kind` | `Once` (zero), `FixedDelay`, or `FixedRate`. Unknown enum values are invalid. |
+| `At`, `Every` | Zero At means immediate for Once, admission + Every for intervals. Explicit At sets the first nominal time; a past At is allowed. Recurring Every must be positive; Once Every must be zero. Unrepresentable elapsed-time arithmetic is rejected. |
+| `Overlap` | `BufferLatest` by default; `SkipOverlap` is valid only with FixedRate. Neither permits self-overlap. |
+| `MaxRuns` | Once accepts 0/1 and runs once. Recurring zero means unlimited; positive values count first dispatches, including failed runs. Retries and suppressed ticks do not count. |
+| `Until` | Inclusive upper bound on nominal occurrence times. Reject a bound preceding the resolved first occurrence. An in-window occurrence can run late; retries can occur after Until. |
+| `Timeout` | Per-attempt cooperative timeout; zero disables it, negative values are invalid. Timeout retains the slot until return, then classifies even a nil return as TimedOut. |
+| `Retry.MaxAttempts` | Total attempts including the first; 0/1 means one attempt, negative values are invalid. |
+| `InitialBackoff`, `MaxBackoff` | With retries enabled, defaults are 1s and 1m. Nonnegative, normalized maximum >= initial; nonzero backoff without retries is invalid. |
+| Handler/context | Nil handler: `ErrInvalidSpec`; nil context: `ErrInvalidArgument`, with no mutation. |
 
-Middleware must return synchronously and must not retain its task or continuation. Callbacks run outside internal locks and may run concurrently. They must be prompt and must not call Stop/StopCtx or wait for work queued behind the same worker. Execution hooks and metric callbacks finish before their execution slot is released; submission and queue callbacks can delay their calling operation. A middleware panic is recovered; enqueue failures return an error, run failures follow the attempt policy, and reschedule failures end that registration. `runtime.Goexit`, `os.Exit`, and panics in application-created goroutines are outside the result/repetition guarantee.
+Validation errors wrap `ErrInvalidConfig` or `ErrInvalidSpec` and name the field. Before startup admission returns `ErrNotRunning`; after stop begins it returns `ErrStopped`; exhausted admission capacity returns `ErrCapacity`. Repeated Start returns `ErrAlreadyStarted` while running, `ErrStopped` after stop begins. Invalid/canceled startup leaves Created unchanged.
 
-## Shutdown and observation
+## Guarantees
 
-`Stop()` retains its draining contract. Tasks with `WithCancelOnStop()` receive cancellation when shutdown starts, including already queued tasks when they later dispatch. Other handlers continue normally. Cancellation never kills a goroutine or frees its execution slot before it returns.
+The coordinator owns mutable registrations, an indexed deadline heap, and a FIFO ready list. Execution never blocks scheduling. Running owns W workers, one coordinator, and optionally one observer dispatcher. There is no goroutine per registration, delayed retry, or tick. At most S registrations are retained, W attempts dispatched, and one open run plus one buffered occurrence per registration. Canceled registrations retain admission capacity until dispatched work actually returns. Each registration embeds at most two timer nodes and one ready entry; removal leaves no timer tombstones. Handler closures and errors can retain application memory beyond these bookkeeping bounds.
 
-`StopCtx(ctx, Drain)` limits the caller's wait while keeping queued work. `StopCtx(ctx, Abort)` drops queued work and waits for dispatched functions and completion callbacks. A context timeout returns `ctx.Err()` while shutdown continues. Repeated calls wait for the same completion; Abort can escalate an earlier Drain. Neither method can restart a stopped worker. Calling Stop before Start still discards pending work.
+An eligibility time is a lower bound, with no latency SLA. Explicit wall timestamps resolve once onto an elapsed-time timeline. Later wall-clock jumps change actual event/finish timestamps but do not retarget existing schedules, cutoffs, or nominal reporting. Equal eligibility uses admission order; simultaneous completion/tick ordering follows coordinator event order. Ready entries keep position when coalesced, while newly eligible retries join the tail. A dispatch invokes its handler at most once, but retries can repeat business effects.
 
-`Status()` reports lifecycle (including `Paused`), queue length, in-flight work, next eligibility time, and counters. `Scheduled` counts scheduler queue insertions, including repeats/retries; prefilled custom queues bypass that counter. Attempt counters distinguish successes, errors and panics. `AddQueueObserver` reports queue mutations outside locks; concurrent notifications can arrive out of order, so use `Status()` or `StartQueueLengthSampler` for a current gauge. The sampler blocks until its context is canceled, and the application owns any goroutine used for it.
+Fixed delay calculates the next nominal time from the worker's terminal return time, after the final retry, for success, failure, timeout, or panic. A failed run never silently deletes recurrence. Fixed rate keeps its original anchor. While a run is open, BufferLatest keeps the latest due occurrence and counts replaced ones as coalesced; SkipOverlap discards and counts due ticks. Under global saturation, either policy retains the latest due tick and coalesces older ones. Refresh occurs immediately before dispatch. Missed-tick arithmetic is constant time. For a five-second schedule blocked from t=0 to t=16, BufferLatest keeps t=15 and coalesces t=5/t=10; SkipOverlap discards all three and next runs at t=20.
 
-`NewStatusHandler(w)` serves JSON and returns 500 if the snapshot cannot be encoded. `NewHealthHandler(w)` returns 200 while started and dispatch is enabled, including when no tasks are queued, future tasks are queued, or all slots are occupied; workers that have not started or are paused/stopping/stopped return 503. The application owns routing, access control and HTTP server lifetime.
+Retries preserve RunID, Number, and ScheduledAt, increment Attempt, and rejoin the common queue. After failed attempt a, full jitter chooses `[0, min(MaxBackoff, InitialBackoff*2^(a-1))]` with overflow-safe capping. `Permanent(err)` preserves `errors.Is`/`errors.As` and prevents retry; `Permanent(nil)` is nil. Error-chain inspection runs on the worker and retains its slot; application `As`/`Unwrap` methods must return, and their panics receive the same recovery as handler panics. Recovered panics expose `*PanicError`, capture at most 16 KiB of stack, and never retry. Outcome precedence at return: panic, control cancellation, timeout, returned error, success. Timeout/cancellation errors match the corresponding context error and preserve a distinct handler error. Canceling during backoff produces one canceled run result preserving the failed attempt error, without inventing another attempt.
 
-## Integration examples
+`RunLimitReached` wins over `UntilReached` when both natural limits apply. A one-shot uses `OneShotFinished` for any execution outcome. The first acknowledged explicit cancellation or scheduler stop fixes the termination reason; later requests do not replace it. A finished result never changes. Finish reason and last-run outcome describe different facts.
 
-- [Combined options](examples/extended/main.go): finite fixed-rate recurrence, retries, jitter, keyed exclusion, cancellation and hooks. Run `go run ./examples/extended`.
-- [Prometheus](examples/prometheus): counters, histograms, queue gauge and HTTP scrape handler.
-- [OpenTelemetry](examples/otel): execution spans and SDK metrics.
+Before command handoff, request cancellation can prevent admission/cancellation. After handoff the coordinator checks the context before committing, then always acknowledges. A returned registration error guarantees no registration was committed. Admission can succeed just after caller cancellation if commitment won that race. After Cancel acknowledges, no new attempt can dispatch; an earlier handoff may still enter with a canceled context.
 
-The telemetry examples are separate modules with pinned SDK dependencies and Go 1.26 minimums. The library itself remains dependency-free and supports Go 1.20. Each integration has its own CI build, vet and executable smoke check.
+Shutdown rejects admission, prevents further handoffs, abandons undispatched work with `SchedulerStopped`, removes retry waits, and lets dispatched attempts return. Lifetime cancellation or any expired Shutdown context cancels all dispatched execution and observation. Cleanup continues after a waiting caller returns. Other Shutdown callers can keep waiting. A never-started scheduler stops directly. Stopped instances cannot restart. A noncooperative handler/observer can prevent Done from closing; no replacement goroutines hide that work. Do not wait for shutdown or the current handle inside its own handler/observer. `runtime.Goexit`, process exits, and unmanaged goroutine panics are outside execution guarantees.
+
+## Observation
+
+Scheduler and handle snapshots are individually consistent, but are not an atomic pair. `CurrentRun` persists through execution and retry waiting/ready states. `NextScheduledAt` is the earliest retained nominal occurrence, including a buffered one; it is distinct from retry eligibility. `NextAttemptAt` reports pending first/retry eligibility, including past eligibility in Ready; it is zero while executing. Ready retries contribute to ReadySchedules, not WaitingRetries. RunningAttempts includes every dispatched attempt until its completion is processed.
+
+Counters distinguish runs from attempts. AttemptsFailed includes timeout/panic, excludes control cancellation. A failed attempt followed by success increments AttemptsFailed and RunsSucceeded. Suppressed ticks count as occurrences; Accepted counts committed registrations. Rejected counts coordinator-rejected admission transactions; validation and cancellation before handoff are caller-local and do not enter that counter. Only the latest terminal run is retained.
+
+Events are sequenced, bounded, asynchronous, and best effort; full buffers drop new events and increment EventsDropped. Suppressed ranges produce one event with a count. Observer panics are isolated and counted. Graceful shutdown drains retained events. Escalation cancels the observer context and discards queued/subsequent events, counting them as dropped; an already-entered callback may finish canceled. Authoritative counters/results survive event loss. Arbitrary error/panic objects remain application-owned and must be safe to inspect concurrently.
+
+The core starts no HTTP server. [Structured logging and HTTP readiness](examples/logging/main.go), [Prometheus](examples/prometheus/main.go), and [OpenTelemetry](examples/otel/main.go) show application integration. Cumulative metrics come from snapshots. Names/IDs belong in logs/traces, not automatic unbounded metric labels. Integrations retain no per-registration registry. Telemetry modules have independent dependencies and currently require Go 1.26+.
+
+## Migration and verification
+
+Read [MIGRATION.md](MIGRATION.md) before moving v1 jobs. Pause/resume, business windows, occurrence jitter, keyed exclusion, custom queues/backoff, absolute registration deadlines, scheduling middleware, and reliable engine hooks have no v2.0 equivalent. Keep v1 for jobs needing those contracts.
+
+From this directory:
 
 ```sh
-(cd examples/prometheus && go run .)
-(cd examples/otel && go run .)
+go test ./...
+go test -race ./... -count=1
+go vet ./...
+go test -run '^$' -fuzz '^FuzzCoordinatorTransitions$' -fuzztime 10s -parallel 2
+go test -run '^$' -fuzz '^FuzzIndexedHeap$' -fuzztime 10s -parallel 2
+go test -run '^$' -bench . -benchtime=1x -count=1
+go run -race ./examples/logging
 ```
 
-The examples use the official [Prometheus Go client pattern](https://prometheus.io/docs/guides/go-application/) and [OpenTelemetry Go instrumentation APIs](https://opentelemetry.io/docs/languages/go/instrumentation/). Their programs finish after a demonstration rather than starting a persistent server.
+Run `go test -race ./...`, `go vet ./...`, and `go run -race .` separately inside each migration/telemetry example module. Root-module commands exercise v2. CI covers Go 1.25, 1.26, and current stable; migration fixtures compare the root v2 module with the published v1.0.0 dependency. V1's own source and test suite remain on `release/v1`.
 
-Custom implementations of `Worker` must implement `SetQueue`, `SubmitWithOptions`, `Pause`, `Resume`, `StopCtx`, `Status`, and `AddQueueObserver` alongside the original submission, configuration, and lifecycle methods. Callers use the same `New()` constructor and fluent methods for legacy and extended options.
+Tests use Go's `testing/synctest`, explicit barriers, a private wall/elapsed clock seam, heap properties, and fuzzed transition sequences. They cover noncooperative handlers/observers with explicit release, clock jumps, cancellation/admission races, shutdown escalation, retry fairness, exact overlap accounting, a billion missed ticks, resource bounds, terminal cleanup, and idle/saturation behavior. A clean race run is evidence for exercised paths, not proof of arbitrary application handler safety.
+
+Initial local benchmark sample: Apple M1 Pro, darwin/arm64, Go 1.25.10, ten workers, one iteration per workload. Simultaneous short-handler bursts at 10/1,000/10,000 registrations took 0.174/7.16/69.6ms for admission through shutdown, with mean handler-entry lag 0.054/5.50/54.1ms and total allocations 64.6KB/4.68MB/46.5MB. Retained future-registration bookkeeping measured approximately 2,546/1,718/1,702 bytes per registration after GC. The benchmark advances the private elapsed clock once after admission to make all jobs due together; lag includes admission time. Slow (100µs sleep), retry, and cancellation cases are also reproducible in `benchmarks_test.go`. These single samples include runtime noise and establish no throughput/latency SLA; rerun on the deployment toolchain and hardware.
