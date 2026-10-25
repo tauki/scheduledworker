@@ -14,7 +14,7 @@ var background = context.Background()
 
 func newTestScheduler(t *testing.T, opts ...Option) *Scheduler {
 	t.Helper()
-	s, err := New(opts...)
+	s, err := NewWithOptions(opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func newTestScheduler(t *testing.T, opts ...Option) *Scheduler {
 }
 func schedule(t *testing.T, s *Scheduler, h Handler, opts ...ScheduleOption) *Handle {
 	t.Helper()
-	handle, err := s.Schedule(background, h, opts...)
+	handle, err := s.ScheduleWithOptions(background, h, opts...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,11 +48,11 @@ func shutdown(t *testing.T, s *Scheduler) {
 
 func TestValidationAndLifecycle(t *testing.T) {
 	for _, opts := range [][]Option{{WithWorkers(-1)}, {WithMaxSchedules(-1)}, {WithEventBuffer(-1)}, {WithWorkers(2), WithMaxSchedules(1)}, {nil}} {
-		if _, err := New(opts...); !errors.Is(err, ErrInvalidConfig) {
+		if _, err := NewWithOptions(opts...); !errors.Is(err, ErrInvalidConfig) {
 			t.Fatalf("options %v: %v", opts, err)
 		}
 	}
-	s, err := New()
+	s, err := NewWithOptions()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestValidationAndLifecycle(t *testing.T) {
 		t.Fatal("defaults")
 	}
 	noop := func(context.Context, RunInfo) error { return nil }
-	if _, err = s.Schedule(background, noop); !errors.Is(err, ErrNotRunning) {
+	if _, err = s.ScheduleWithOptions(background, noop); !errors.Is(err, ErrNotRunning) {
 		t.Fatal(err)
 	}
 	if err = s.Start(nil); !errors.Is(err, ErrInvalidArgument) {
@@ -86,14 +86,14 @@ func TestValidationAndLifecycle(t *testing.T) {
 		{WithAt(time.Now().Add(time.Hour)), WithUntil(time.Now())},
 	}
 	for _, opts := range invalid {
-		if _, err = s.Schedule(background, noop, opts...); !errors.Is(err, ErrInvalidSpec) {
+		if _, err = s.ScheduleWithOptions(background, noop, opts...); !errors.Is(err, ErrInvalidSpec) {
 			t.Fatalf("options %v: %v", opts, err)
 		}
 	}
-	if _, err = s.Schedule(nil, noop); !errors.Is(err, ErrInvalidArgument) {
+	if _, err = s.ScheduleWithOptions(nil, noop); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatal(err)
 	}
-	if _, err = s.Schedule(background, nil); !errors.Is(err, ErrInvalidSpec) {
+	if _, err = s.ScheduleWithOptions(background, nil); !errors.Is(err, ErrInvalidSpec) {
 		t.Fatal(err)
 	}
 }
@@ -167,7 +167,7 @@ func TestCancellationRetainsCapacityAndAcknowledgment(t *testing.T) {
 		if ctx.Err() != context.Canceled || h.Status().State != Canceling {
 			t.Fatal(h.Status())
 		}
-		if _, err := s.Schedule(background, func(context.Context, RunInfo) error { return nil }); !errors.Is(err, ErrCapacity) {
+		if _, err := s.ScheduleWithOptions(background, func(context.Context, RunInfo) error { return nil }); !errors.Is(err, ErrCapacity) {
 			t.Fatal(err)
 		}
 		select {
@@ -197,12 +197,12 @@ func TestAdmissionContextOnlyAndCanceledTransaction(t *testing.T) {
 		s := newTestScheduler(t, WithWorkers(1))
 		defer shutdown(t, s)
 		ctx, cancel := context.WithCancel(background)
-		h, err := s.Schedule(ctx, func(context.Context, RunInfo) error { return nil }, WithAt(time.Now().Add(time.Hour)))
+		h, err := s.ScheduleWithOptions(ctx, func(context.Context, RunInfo) error { return nil }, WithAt(time.Now().Add(time.Hour)))
 		if err != nil {
 			t.Fatal(err)
 		}
 		cancel()
-		if _, err = s.Schedule(ctx, func(context.Context, RunInfo) error { t.Error("canceled admission ran"); return nil }); !errors.Is(err, context.Canceled) {
+		if _, err = s.ScheduleWithOptions(ctx, func(context.Context, RunInfo) error { t.Error("canceled admission ran"); return nil }); !errors.Is(err, context.Canceled) {
 			t.Fatal(err)
 		}
 		if r := result(t, h); r.LastRun.Outcome != Succeeded {
@@ -216,7 +216,7 @@ func TestShutdownEscalationAndLifetimeCancellation(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
 			parent, cancel := context.WithCancel(background)
 			defer cancel()
-			s, _ := New(WithWorkers(1))
+			s, _ := NewWithOptions(WithWorkers(1))
 			if err := s.Start(parent); err != nil {
 				t.Fatal(err)
 			}
@@ -225,7 +225,11 @@ func TestShutdownEscalationAndLifetimeCancellation(t *testing.T) {
 			}
 			started := make(chan context.Context, 1)
 			release := make(chan struct{})
-			h := schedule(t, s, func(ctx context.Context, _ RunInfo) error { started <- ctx; <-release; return errors.New("returned") })
+			h := schedule(t, s, func(ctx context.Context, _ RunInfo) error {
+				started <- ctx
+				<-release
+				return errors.New("returned")
+			})
 			execution := <-started
 			wait := make(chan error, 1)
 			go func() { wait <- s.Shutdown(background) }()
@@ -277,7 +281,7 @@ func TestConcurrentAdmissionCancellationAndStop(t *testing.T) {
 			if i%3 == 0 {
 				cancel()
 			}
-			h, err := s.Schedule(ctx, func(context.Context, RunInfo) error { called.Add(1); return nil })
+			h, err := s.ScheduleWithOptions(ctx, func(context.Context, RunInfo) error { called.Add(1); return nil })
 			if err != nil {
 				if h != nil {
 					t.Error("error with committed handle")

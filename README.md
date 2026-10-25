@@ -23,7 +23,7 @@ Requires Go 1.25 or newer. The core uses only the standard library. Applications
 
 ## Installation
 
-V2 is under development in [PR #18](https://github.com/tauki/scheduledworker/pull/18). To evaluate it from an existing Go module, replace `COMMIT_SHA` with a commit SHA from that PR:
+This branch prepares v2.1.0 in [PR #18](https://github.com/tauki/scheduledworker/pull/18). The options APIs shown below are additions for v2.1.0; the v2.0.0 configuration APIs remain supported. Until v2.1.0 is published, evaluate it from an existing Go module by replacing `COMMIT_SHA` with a commit SHA from that PR:
 
 ```sh
 go get github.com/tauki/scheduledworker/v2@COMMIT_SHA
@@ -47,7 +47,7 @@ import (
 )
 
 func main() {
-	s, err := sw.New(sw.WithWorkers(4), sw.WithMaxSchedules(1000))
+	s, err := sw.NewWithOptions(sw.WithWorkers(4), sw.WithMaxSchedules(1000))
 	if err != nil {
 		panic(err)
 	}
@@ -62,7 +62,7 @@ func main() {
 		}
 	}()
 
-	h, err := s.Schedule(context.Background(),
+	h, err := s.ScheduleWithOptions(context.Background(),
 		func(ctx context.Context, run sw.RunInfo) error {
 			fmt.Println("hello")
 			return nil
@@ -100,7 +100,16 @@ Use `WithAt(time.Now())` for an immediate first interval run. Recurring schedule
 
 ## Public API and defaults
 
-`New(opts ...Option) (*Scheduler, error)` constructs an idle, concrete scheduler. `New()` uses 10 workers, capacity for 10,000 schedules, and no observer. `Start(ctx)` starts it once; that context governs its lifetime. `Schedule(ctx, handler, opts ...ScheduleOption) (*Handle, error)` acknowledges admission; without options it schedules one immediate run. `Shutdown(ctx)` initiates terminal shutdown and waits; `Done()` closes after all owned goroutines exit. `Status()` returns a consistent snapshot.
+`NewWithOptions(opts ...Option) (*Scheduler, error)` constructs an idle, concrete scheduler. `NewWithOptions()` uses 10 workers, capacity for 10,000 schedules, and no observer. `Start(ctx)` starts it once; that context governs its lifetime. `ScheduleWithOptions(ctx, handler, opts ...ScheduleOption) (*Handle, error)` acknowledges admission; without options it schedules one immediate run. `Shutdown(ctx)` initiates terminal shutdown and waits; `Done()` closes after all owned goroutines exit. `Status()` returns a consistent snapshot.
+
+The v2.0.0 entry points retain their signatures and behavior: `New(Config)` and `Schedule(ctx, Spec, handler)`. Both APIs use the same validation, lifecycle, admission capacity, and scheduling engine. Configurations and specifications are copied on entry; modifying the caller's values afterward does not change accepted work. Existing function values and interfaces continue to compile.
+
+| Existing v2.0.0 call | Corresponding v2.1.0 options call |
+| --- | --- |
+| `New(Config{Workers: 4})` | `NewWithOptions(WithWorkers(4))` |
+| `s.Schedule(ctx, Spec{At: at}, handler)` | `s.ScheduleWithOptions(ctx, handler, WithAt(at))` |
+
+v2.1.0 adds these functions without requiring an import-path change.
 
 Options apply left to right, and the last value for a setting wins. `WithFixedDelay` and `WithFixedRate` each set both the scheduling mode and interval. Validation runs after all options, and the resulting configuration is immutable. Options returned by the helpers can be reused across concurrent calls; avoid mutating a shared options slice while another call reads it. Nil options return a validation error. Constructor `Option` and registration `ScheduleOption` are separate types.
 
@@ -128,7 +137,7 @@ Validation errors wrap `ErrInvalidConfig` or `ErrInvalidSpec` and name the field
 | Context | Effect of cancellation or expiration |
 | --- | --- |
 | `Start(ctx)` | Stops the scheduler and cancels dispatched work and observation. |
-| `Schedule(ctx, ...)` | Controls admission only. After successful admission, use `Handle.Cancel` to cancel the schedule. |
+| `Schedule(ctx, ...)`, `ScheduleWithOptions(ctx, ...)` | Controls admission only. After successful admission, use `Handle.Cancel` to cancel the schedule. |
 | `Handle.Cancel(ctx)` | Controls the cancellation request. An acknowledged request prevents future dispatch and cancels dispatched work. |
 | `Handle.Wait(ctx)` | Ends this caller's wait; the schedule continues. |
 | `Shutdown(ctx)` | Ends this caller's wait and escalates shared cancellation for all dispatched work and observation. Cleanup continues. |

@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// Scheduler must be constructed with New, and must not be copied.
+// Scheduler must be constructed with New or NewWithOptions, and must not be copied.
 type Scheduler struct {
 	mu       sync.Mutex // arbitrates startup, stop, and the dispatch boundary only
 	state    State
@@ -35,10 +35,17 @@ type response struct {
 	err    error
 }
 
-// New applies options and validates configuration without starting goroutines
+// New validates and copies configuration without starting goroutines or timers.
+// NewWithOptions provides the same configuration through variadic options.
+func New(cfg Config) (*Scheduler, error) {
+	return newScheduler(config{workers: cfg.Workers, maxSchedules: cfg.MaxSchedules,
+		observer: cfg.Observer, eventBuffer: cfg.EventBuffer})
+}
+
+// NewWithOptions applies options and validates configuration without starting goroutines
 // or timers. With no options it uses 10 workers, 10,000 schedule slots, and no
 // observer. Configuration is immutable after construction.
-func New(opts ...Option) (*Scheduler, error) {
+func NewWithOptions(opts ...Option) (*Scheduler, error) {
 	var c config
 	for i, opt := range opts {
 		if opt == nil {
@@ -46,6 +53,10 @@ func New(opts ...Option) (*Scheduler, error) {
 		}
 		opt(&c)
 	}
+	return newScheduler(c)
+}
+
+func newScheduler(c config) (*Scheduler, error) {
 	c, err := normalizeConfig(c)
 	if err != nil {
 		return nil, err
@@ -82,9 +93,17 @@ func (s *Scheduler) Start(ctx context.Context) error {
 
 // Schedule commits a registration while Running. An error guarantees that no
 // registration was committed. ctx controls admission only, not job lifetime.
+// The specification is copied. ScheduleWithOptions provides the same scheduling
+// policies through variadic options.
+func (s *Scheduler) Schedule(ctx context.Context, input Spec, h Handler) (*Handle, error) {
+	return s.schedule(ctx, spec(input), h)
+}
+
+// ScheduleWithOptions commits a registration while Running. An error guarantees
+// that no registration was committed. ctx controls admission only, not job lifetime.
 // With no options the handler is scheduled once, immediately. Options apply in
 // order, with the last value for a setting winning. A nil option is invalid.
-func (s *Scheduler) Schedule(ctx context.Context, h Handler, opts ...ScheduleOption) (*Handle, error) {
+func (s *Scheduler) ScheduleWithOptions(ctx context.Context, h Handler, opts ...ScheduleOption) (*Handle, error) {
 	if ctx == nil {
 		return nil, ErrInvalidArgument
 	}
@@ -94,6 +113,13 @@ func (s *Scheduler) Schedule(ctx context.Context, h Handler, opts ...ScheduleOpt
 			return nil, fmt.Errorf("%w: option %d is nil", ErrInvalidSpec, i+1)
 		}
 		opt(&input)
+	}
+	return s.schedule(ctx, input, h)
+}
+
+func (s *Scheduler) schedule(ctx context.Context, input spec, h Handler) (*Handle, error) {
+	if ctx == nil {
+		return nil, ErrInvalidArgument
 	}
 	spec, err := normalizeSpec(input, h)
 	if err != nil {

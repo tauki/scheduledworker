@@ -5,6 +5,9 @@ import (
 	"time"
 )
 
+// Both admission APIs copy into spec before validation and coordinator handoff.
+type spec Spec
+
 func normalizeSpec(s spec, h Handler) (spec, error) {
 	bad := func(field string) (spec, error) { return s, fmt.Errorf("%w: %s", ErrInvalidSpec, field) }
 	if h == nil {

@@ -32,7 +32,7 @@ func BenchmarkWorkloads(b *testing.B) {
 				var totalLag atomic.Int64
 				var calls atomic.Int64
 				for k := 0; k < b.N; k++ {
-					s, _ := New(WithWorkers(10), WithMaxSchedules(n))
+					s, _ := NewWithOptions(WithWorkers(10), WithMaxSchedules(n))
 					clock := &advancingClock{clock: s.clock}
 					s.clock = clock
 					s.jitter = func(uint64) uint64 { return 0 }
@@ -44,7 +44,7 @@ func BenchmarkWorkloads(b *testing.B) {
 						opts = append(opts, WithRetry(RetryPolicy{MaxAttempts: 2}))
 					}
 					for i := 0; i < n; i++ {
-						h, err := s.Schedule(background, func(_ context.Context, r RunInfo) error {
+						h, err := s.ScheduleWithOptions(background, func(_ context.Context, r RunInfo) error {
 							if r.Attempt == 1 {
 								totalLag.Add(int64(clock.now().wall.Sub(r.ScheduledAt)))
 								calls.Add(1)
@@ -92,10 +92,10 @@ func BenchmarkRetainedRegistrations(b *testing.B) {
 				runtime.GC()
 				var before, after runtime.MemStats
 				runtime.ReadMemStats(&before)
-				s, _ := New(WithWorkers(10), WithMaxSchedules(n))
+				s, _ := NewWithOptions(WithWorkers(10), WithMaxSchedules(n))
 				_ = s.Start(background)
 				for i := 0; i < n; i++ {
-					_, err := s.Schedule(background, func(context.Context, RunInfo) error { return nil }, WithAt(time.Now().Add(time.Hour)))
+					_, err := s.ScheduleWithOptions(background, func(context.Context, RunInfo) error { return nil }, WithAt(time.Now().Add(time.Hour)))
 					if err != nil {
 						b.Fatal(err)
 					}

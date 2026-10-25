@@ -2,16 +2,18 @@
 
 V1.0.0 remains available at `github.com/tauki/scheduledworker`, with v1 maintenance on `release/v1`. V2 is under development at the repository root, uses `github.com/tauki/scheduledworker/v2`, and requires Go 1.25+. For evaluation, replace `COMMIT_SHA` in `go get github.com/tauki/scheduledworker/v2@COMMIT_SHA` with a commit SHA from [PR #18](https://github.com/tauki/scheduledworker/pull/18), then update imports explicitly. The two import paths can coexist in an application with separate scheduler ownership. There is no transparent Worker facade or automatic converter over opaque v1 options.
 
+The options-based examples below target v2.1.0. Existing v2.0.0 applications can keep `New(Config)` and `Schedule(ctx, Spec, handler)` unchanged; both APIs share the same engine and validation. The import path stays `/v2`.
+
 The completed v1 already fixed batch blocking, recurrence loss after failure, interceptor repeat accounting, and future-work health reporting. Those regression cases inform v2 tests; they are not remaining v1 defects. V1 already counts total retry attempts, counts failed occurrences against finite recurrence, and defaults the first zero-At interval to admission + Every in both submission APIs.
 
 ## Construction and lifetime
 
 | V1 | V2 / required action |
 | --- | --- |
-| `Worker`, `New()`, `Start()` | Concrete `*Scheduler`, `New(...Option)` and `Start(ctx)` with checked errors. New() selects defaults. Consumers define narrow interfaces. Repeated startup is an error. |
+| `Worker`, `New()`, `Start()` | Concrete `*Scheduler`, `NewWithOptions(...Option)` and `Start(ctx)` with checked errors. NewWithOptions() selects defaults. Consumers define narrow interfaces. Repeated startup is an error. |
 | `SetMaxWorker` | `WithWorkers(n)` at construction; immutable afterward. Invalid sizes return errors rather than normalizing. |
 | `SetDuration` | Removed. One next-deadline timer drives scheduling. |
-| `Submit(Task, ...TaskOpt)`, `SubmitWithOptions(Task, ...Option)` | `Schedule(ctx, handler, ...ScheduleOption)` after successful Start, with bounded capacity and acknowledged admission. An error guarantees no committed registration. |
+| `Submit(Task, ...TaskOpt)`, `SubmitWithOptions(Task, ...Option)` | `ScheduleWithOptions(ctx, handler, ...ScheduleOption)` after successful Start, with bounded capacity and acknowledged admission. An error guarantees no committed registration. |
 | `Task.Fn`, `Task.FnErr` | One `Handler(context.Context, RunInfo) error`. Choose one deliberately; wrapping `func()` cannot make its work cancelable. Legacy FnErr precedence disappears. |
 | `WithContext`, `Spec.Context` | Explicit application ownership and Handle.Cancel. Schedule's context controls admission only; it is not a per-registration parent. |
 | `WithDeadline`, `Spec.Deadline` | No equivalent absolute registration deadline. Per-attempt Timeout or a handler-only wrapper changes outcome/retry/recurrence semantics. |
@@ -44,8 +46,8 @@ err := w.SubmitWithOptions(v1.Task{FnErr: refresh},
     v1.WithEvery(30*time.Second), v1.WithRepeat(3),
     v1.WithRetry(v1.RetryPolicy{MaxAttempts: 3}))
 
-// V2: after checking New and Start errors.
-h, err := s.Schedule(admissionCtx,
+// V2.1: after checking NewWithOptions and Start errors.
+h, err := s.ScheduleWithOptions(admissionCtx,
     func(ctx context.Context, run v2.RunInfo) error { return refresh(ctx) },
     v2.WithFixedDelay(30*time.Second), v2.WithMaxRuns(3),
     v2.WithRetry(v2.RetryPolicy{MaxAttempts: 3}))
@@ -68,7 +70,7 @@ Until changes from v1 transformed/retry eligibility to an inclusive v2 nominal o
 | `PanicError` | Match the type from the correct major import. Stack changes from `[]byte` to `string`, capped at 16 KiB. Panics never retry in v2. |
 | `WithTimeout` | WithTimeout retains capacity until return; v2 records TimedOut even on nil return after expiry. V1's nil return counts success. |
 | Task.At during retries, Spec.Attempt | RunInfo adds ScheduleID, stable RunID/Number/ScheduledAt, and Attempt. Retries do not overwrite nominal ScheduledAt. |
-| Spec/NewSpec, Option/OptionFunc, Task.Spec | ScheduleOption helpers build a private immutable registration; RunInfo, snapshots and results describe it. No mutable live task/plugin surface. |
+| Spec/NewSpec, Option/OptionFunc, Task.Spec | ScheduleWithOptions applies helpers before admission; Schedule accepts a copied Spec. RunInfo, snapshots and results describe immutable scheduler-owned state. No mutable live task/plugin surface. |
 | `ErrStopped`, `ErrInvalidTask`, `ErrNextCalledTwice` | ErrStopped; separate ErrInvalidConfig/Spec/Argument plus capacity/lifecycle sentinels. Continuation misuse disappears with scheduling middleware. Use errors.Is. |
 
 At return, panic wins over control cancellation, which wins over timeout, then returned error, then success. Context outcome errors match context.Canceled/DeadlineExceeded and preserve distinct handler errors. A nil-returning handler may have performed effects before being classified canceled/timed out. Cancellation during retry waiting preserves the previous attempt error in the canceled run result without a fictitious additional attempt. Retrying a timed-out noncooperative handler waits for its actual return first.

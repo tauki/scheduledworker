@@ -1,16 +1,18 @@
 // Package scheduledworker is a bounded, process-local scheduler for one-shot,
-// fixed-delay, and fixed-rate work. Construct with New, Start explicitly, and
+// fixed-delay, and fixed-rate work. Construct with NewWithOptions, Start explicitly, and
 // retain registration Handles to cancel work or inspect terminal results.
 //
-// New and Schedule accept variadic options; their defaults are a scheduler with
+// NewWithOptions and ScheduleWithOptions accept variadic options; their defaults are a scheduler with
 // 10 workers and 10,000 slots, and one immediate handler invocation respectively.
 // Options are applied and validated before construction or registration.
+// New(Config) and Schedule(ctx, Spec, Handler) retain their v2.0.0 signatures
+// and behavior; both APIs use the same scheduling engine.
 //
 // One coordinator owns schedule/run/attempt transitions. WithWorkers bounds
 // dispatched attempts, WithMaxSchedules bounds retained registrations,
 // and each registration has one open run, one pending occurrence, at most two
 // indexed deadlines, and one ready-list entry. Retries never overlap their run.
-// New starts no goroutine. Running uses the configured workers, one coordinator, and
+// Construction starts no goroutine. Running uses the configured workers, one coordinator, and
 // optionally one observer dispatcher; no goroutine is created per registration.
 //
 // Schedule's context controls admission only. Start's context owns the entire

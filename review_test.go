@@ -28,7 +28,7 @@ func admitForReview(t *testing.T, c *coordinator, spec spec, h Handler) *Handle 
 func TestCompletionBeforeDelayedFixedRateTickProcessing(t *testing.T) {
 	for _, policy := range []OverlapPolicy{BufferLatest, SkipOverlap} {
 		t.Run(map[OverlapPolicy]string{BufferLatest: "buffer", SkipOverlap: "skip"}[policy], func(t *testing.T) {
-			s, _ := New(WithWorkers(1))
+			s, _ := NewWithOptions(WithWorkers(1))
 			s.state = Running
 			clock := &manualClock{}
 			s.clock = clock
@@ -60,7 +60,7 @@ func TestTimeoutClassificationDoesNotDependOnTimerCallback(t *testing.T) {
 	clock := &manualClock{}
 	// Use dispatch to set timeout metadata, then advance only the private elapsed
 	// clock inside the handler; the real context timer has not fired yet.
-	s, _ := New(WithWorkers(1))
+	s, _ := NewWithOptions(WithWorkers(1))
 	s.state = Running
 	s.clock = clock
 	c := newCoordinator(s, background)
@@ -93,7 +93,7 @@ func TestApplicationErrorClassificationCannotBlockCoordinator(t *testing.T) {
 		<-e.entered
 		ctx, cancel := context.WithTimeout(background, time.Second)
 		defer cancel()
-		other, err := s.Schedule(ctx, func(context.Context, RunInfo) error { return nil })
+		other, err := s.ScheduleWithOptions(ctx, func(context.Context, RunInfo) error { return nil })
 		close(e.release)
 		if err != nil {
 			t.Fatalf("application error blocked unrelated admission: %v", err)
@@ -104,7 +104,7 @@ func TestApplicationErrorClassificationCannotBlockCoordinator(t *testing.T) {
 }
 
 func TestImmediateStopDropsTerminationEventsBeforeDelivery(t *testing.T) {
-	s, _ := New(WithWorkers(1))
+	s, _ := NewWithOptions(WithWorkers(1))
 	s.state = Running
 	s.clock = &manualClock{}
 	c := newCoordinator(s, background)
@@ -169,7 +169,7 @@ func TestWrappedPermanentErrorsNeverRetry(t *testing.T) {
 
 func TestFixedRateTickExactlyAtCompletionAllowsBothEventOrders(t *testing.T) {
 	for _, tickFirst := range []bool{false, true} {
-		s, _ := New(WithWorkers(1))
+		s, _ := NewWithOptions(WithWorkers(1))
 		s.state = Running
 		clock := &manualClock{}
 		s.clock = clock

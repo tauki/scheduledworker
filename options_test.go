@@ -24,7 +24,7 @@ func TestConstructorOptionsDefaultsAndOrder(t *testing.T) {
 		{"last values win", []Option{WithWorkers(20), WithMaxSchedules(2), WithWorkers(1), WithObserver(observer), WithObserver(nil), WithEventBuffer(5), WithEventBuffer(0)}, 1, 2, 0, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			s, err := New(tt.opts...)
+			s, err := NewWithOptions(tt.opts...)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -81,7 +81,7 @@ func TestInvalidScheduleOptionsDoNotCommit(t *testing.T) {
 	s := newTestScheduler(t, WithWorkers(1), WithMaxSchedules(1))
 	defer shutdown(t, s)
 	for _, opts := range [][]ScheduleOption{{WithName("valid"), nil}, {WithFixedDelay(0)}, {WithOverlap(SkipOverlap)}} {
-		h, err := s.Schedule(background, func(context.Context, RunInfo) error {
+		h, err := s.ScheduleWithOptions(background, func(context.Context, RunInfo) error {
 			t.Error("invalid registration executed")
 			return nil
 		}, opts...)
@@ -146,7 +146,7 @@ func TestSharedScheduleOptionsKeepConcurrentRegistrationsIndependent(t *testing.
 		for i := range handles {
 			callers.Go(func() {
 				var err error
-				handles[i], err = s.Schedule(background, handler, opts...)
+				handles[i], err = s.ScheduleWithOptions(background, handler, opts...)
 				if err != nil {
 					errs <- err
 				}

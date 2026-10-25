@@ -2,7 +2,7 @@ package scheduledworker
 
 import "time"
 
-// ScheduleOption configures a registration before admission. Options apply in
+// ScheduleOption configures ScheduleWithOptions before admission. Options apply in
 // order; the last value for a setting wins. Options are not retained by the
 // registration. A nil ScheduleOption is invalid.
 type ScheduleOption func(*spec)

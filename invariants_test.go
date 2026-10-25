@@ -27,7 +27,7 @@ func (c *shiftingClock) now() instant {
 
 func TestWallJumpDoesNotChangeFixedDelayOrCutoff(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s, _ := New(WithWorkers(1))
+		s, _ := NewWithOptions(WithWorkers(1))
 		clock := &shiftingClock{clock: s.clock}
 		s.clock = clock
 		if err := s.Start(background); err != nil {
@@ -63,7 +63,7 @@ func TestWallJumpDoesNotChangeFixedDelayOrCutoff(t *testing.T) {
 }
 func TestSaturatedReadyWorkDoesNotSpin(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		s, _ := New(WithWorkers(1))
+		s, _ := NewWithOptions(WithWorkers(1))
 		clock := &shiftingClock{clock: s.clock}
 		s.clock = clock
 		_ = s.Start(background)
@@ -254,7 +254,7 @@ func TestCoordinatorFuzzExercisesOutcomes(t *testing.T) {
 
 func checkCoordinatorTransitions(t *testing.T, ops []byte) Counters {
 	t.Helper()
-	s, _ := New(WithWorkers(2), WithMaxSchedules(8))
+	s, _ := NewWithOptions(WithWorkers(2), WithMaxSchedules(8))
 	s.state = Running
 	clock := &manualClock{}
 	s.clock = clock

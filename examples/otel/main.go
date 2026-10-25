@@ -26,7 +26,7 @@ func main() {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	defer mp.Shutdown(ctx)
-	s, err := sw.New()
+	s, err := sw.NewWithOptions()
 	if err != nil {
 		panic(err)
 	}
@@ -50,7 +50,7 @@ func main() {
 	work := func(context.Context, sw.RunInfo) error { return nil }
 	// A handler decorator observes invocation, not coordinator-final outcomes.
 	// Metadata is immutable application-owned data; no per-ID registry is retained.
-	h, err := s.Schedule(ctx, func(ctx context.Context, r sw.RunInfo) error {
+	h, err := s.ScheduleWithOptions(ctx, func(ctx context.Context, r sw.RunInfo) error {
 		ctx, span := tracer.Start(ctx, "refresh", trace.WithAttributes(attribute.String("schedule.id", string(r.ScheduleID)), attribute.String("run.id", string(r.RunID)), attribute.Int("attempt", r.Attempt)))
 		defer span.End()
 		err := work(ctx, r)

@@ -9,7 +9,7 @@ type config struct {
 	eventBuffer  int
 }
 
-// Option configures a scheduler before construction. Options apply in order;
+// Option configures NewWithOptions before construction. Options apply in order;
 // the last value for a setting wins. A nil Option is invalid.
 type Option func(*config)
 
@@ -38,13 +38,13 @@ func WithEventBuffer(n int) Option {
 
 func normalizeConfig(c config) (config, error) {
 	if c.workers < 0 {
-		return c, fmt.Errorf("%w: workers is negative", ErrInvalidConfig)
+		return c, fmt.Errorf("%w: Workers is negative", ErrInvalidConfig)
 	}
 	if c.maxSchedules < 0 {
-		return c, fmt.Errorf("%w: max schedules is negative", ErrInvalidConfig)
+		return c, fmt.Errorf("%w: MaxSchedules is negative", ErrInvalidConfig)
 	}
 	if c.eventBuffer < 0 {
-		return c, fmt.Errorf("%w: event buffer is negative", ErrInvalidConfig)
+		return c, fmt.Errorf("%w: EventBuffer is negative", ErrInvalidConfig)
 	}
 	if c.workers == 0 {
 		c.workers = 10
@@ -53,7 +53,7 @@ func normalizeConfig(c config) (config, error) {
 		c.maxSchedules = 10_000
 	}
 	if c.workers > c.maxSchedules {
-		return c, fmt.Errorf("%w: workers exceeds max schedules", ErrInvalidConfig)
+		return c, fmt.Errorf("%w: Workers exceeds MaxSchedules", ErrInvalidConfig)
 	}
 	if c.eventBuffer == 0 && c.observer != nil {
 		c.eventBuffer = 256

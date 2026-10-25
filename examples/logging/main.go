@@ -13,7 +13,7 @@ import (
 
 func main() {
 	log := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	s, err := sw.New(sw.WithObserver(func(_ context.Context, e sw.Event) {
+	s, err := sw.NewWithOptions(sw.WithObserver(func(_ context.Context, e sw.Event) {
 		// IDs belong in logs/traces, not unbounded metric labels. Events can drop.
 		log.Info("scheduler event", "schedule", e.ScheduleID, "run", e.Run.RunID, "kind", e.Kind, "outcome", e.Outcome)
 	}))
@@ -23,7 +23,7 @@ func main() {
 	if err = s.Start(context.Background()); err != nil {
 		panic(err)
 	}
-	h, err := s.Schedule(context.Background(), func(ctx context.Context, r sw.RunInfo) error {
+	h, err := s.ScheduleWithOptions(context.Background(), func(ctx context.Context, r sw.RunInfo) error {
 		// Immutable business metadata stays with application instrumentation.
 		log.InfoContext(ctx, "refresh", "customer", "example", "run", r.RunID)
 		return nil

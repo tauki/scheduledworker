@@ -79,7 +79,7 @@ func TestFixedRateSaturationAndInclusiveUntil(t *testing.T) {
 }
 
 func TestBillionMissedTicksAreCoalescedArithmetically(t *testing.T) {
-	s, _ := New()
+	s, _ := NewWithOptions()
 	c := newCoordinator(s, background)
 	r := &registration{h: &Handle{id: "test"}, spec: spec{Kind: FixedRate, Every: time.Nanosecond}, hasNextTick: true}
 	c.advanceRate(r, 1_000_000_000)

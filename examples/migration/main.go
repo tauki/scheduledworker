@@ -17,14 +17,14 @@ func main() {
 		panic(err)
 	}
 	w.Stop() // drains the accepted first occurrence and prevents recurrence
-	s, err := v2.New(v2.WithWorkers(1))
+	s, err := v2.NewWithOptions(v2.WithWorkers(1))
 	if err != nil {
 		panic(err)
 	}
 	if err = s.Start(context.Background()); err != nil {
 		panic(err)
 	}
-	h, err := s.Schedule(context.Background(), func(context.Context, v2.RunInfo) error { return nil }, v2.WithFixedDelay(time.Millisecond), v2.WithMaxRuns(3))
+	h, err := s.ScheduleWithOptions(context.Background(), func(context.Context, v2.RunInfo) error { return nil }, v2.WithFixedDelay(time.Millisecond), v2.WithMaxRuns(3))
 	if err != nil {
 		panic(err)
 	}
