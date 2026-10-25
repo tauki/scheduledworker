@@ -1,12 +1,11 @@
 // Package scheduledworker is a bounded, process-local scheduler for one-shot,
-// fixed-delay, and fixed-rate work. Construct with NewWithOptions, Start explicitly, and
-// retain registration Handles to cancel work or inspect terminal results.
+// fixed-delay, and fixed-rate work. Construct with NewWithOptions, call Start,
+// and retain registration Handles to cancel work or inspect terminal results.
 //
-// NewWithOptions and ScheduleWithOptions accept variadic options; their defaults are a scheduler with
-// 10 workers and 10,000 slots, and one immediate handler invocation respectively.
-// Options are applied and validated before construction or registration.
-// New(Config) and Schedule(ctx, Spec, Handler) retain their v2.0.0 signatures
-// and behavior; both APIs use the same scheduling engine.
+// NewWithOptions and ScheduleWithOptions accept variadic options. Defaults are
+// 10 workers, 10,000 schedule slots, and one immediate handler invocation.
+// New(Config) and Schedule(ctx, Spec, Handler) accept structs instead. Both API
+// styles apply the same defaults, validation, and scheduling policies.
 //
 // One coordinator owns schedule/run/attempt transitions. WithWorkers bounds
 // dispatched attempts, WithMaxSchedules bounds retained registrations,
@@ -15,9 +14,10 @@
 // Construction starts no goroutine. Running uses the configured workers, one coordinator, and
 // optionally one observer dispatcher; no goroutine is created per registration.
 //
-// Schedule's context controls admission only. Start's context owns the entire
-// scheduler lifetime. Handle.Cancel prevents further dispatch and requests
-// cancellation of dispatched work. Cancellation and timeouts are cooperative:
+// The context passed to Schedule or ScheduleWithOptions controls admission only.
+// Start's context owns the entire scheduler lifetime. Handle.Cancel prevents
+// further dispatch and requests cancellation of dispatched work.
+// Cancellation and timeouts are cooperative:
 // a handler keeps its worker slot until it returns or panics. A dispatch invokes
 // the handler at most once, but retries can repeat effects. Handlers requiring
 // business deduplication must implement their own idempotency.
@@ -45,6 +45,5 @@
 //
 // There is no persistence, coordination between processes, public queue plugin,
 // mutable configuration, pause/resume, cron, business windows, occurrence jitter,
-// or keyed exclusion in v2.0. Applications requiring those v1 features can keep
-// using the v1 import path for those jobs.
+// or keyed exclusion.
 package scheduledworker

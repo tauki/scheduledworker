@@ -19,14 +19,12 @@
 
 An embedded Go scheduler for one-shot, fixed-delay, and fixed-rate work, with bounded worker concurrency and admission capacity.
 
-Requires Go 1.25 or newer. The core uses only the standard library. Applications own scheduler lifetime, dependencies, immutable business metadata, and idempotency. State is in memory; crashes lose work, and replicas do not coordinate.
+Requires Go 1.25 or newer. The core uses only the standard library. Applications own scheduler lifetime, handler dependencies, and idempotency. State is in memory; crashes lose work, and replicas do not coordinate.
 
 ## Installation
 
-This branch prepares v2.1.0 in [PR #18](https://github.com/tauki/scheduledworker/pull/18). The options APIs shown below are additions for v2.1.0; the v2.0.0 configuration APIs remain supported. Until v2.1.0 is published, evaluate it from an existing Go module by replacing `COMMIT_SHA` with a commit SHA from that PR:
-
 ```sh
-go get github.com/tauki/scheduledworker/v2@COMMIT_SHA
+go get github.com/tauki/scheduledworker/v2@latest
 ```
 
 Use import path `github.com/tauki/scheduledworker/v2`. Release notes are published in [GitHub Releases](https://github.com/tauki/scheduledworker/releases).
@@ -102,14 +100,12 @@ Use `WithAt(time.Now())` for an immediate first interval run. Recurring schedule
 
 `NewWithOptions(opts ...Option) (*Scheduler, error)` constructs an idle, concrete scheduler. `NewWithOptions()` uses 10 workers, capacity for 10,000 schedules, and no observer. `Start(ctx)` starts it once; that context governs its lifetime. `ScheduleWithOptions(ctx, handler, opts ...ScheduleOption) (*Handle, error)` acknowledges admission; without options it schedules one immediate run. `Shutdown(ctx)` initiates terminal shutdown and waits; `Done()` closes after all owned goroutines exit. `Status()` returns a consistent snapshot.
 
-The v2.0.0 entry points retain their signatures and behavior: `New(Config)` and `Schedule(ctx, Spec, handler)`. Both APIs use the same validation, lifecycle, admission capacity, and scheduling engine. Configurations and specifications are copied on entry; modifying the caller's values afterward does not change accepted work. Existing function values and interfaces continue to compile.
+For struct-based configuration, use `New(Config)` and `Schedule(ctx, Spec, handler)`. Both API styles use the same defaults, validation, lifecycle, admission capacity, and scheduling engine. Configurations and specifications are copied on entry; modifying the caller's values afterward does not change accepted work.
 
-| Existing v2.0.0 call | Corresponding v2.1.0 options call |
+| Struct configuration | Options |
 | --- | --- |
 | `New(Config{Workers: 4})` | `NewWithOptions(WithWorkers(4))` |
 | `s.Schedule(ctx, Spec{At: at}, handler)` | `s.ScheduleWithOptions(ctx, handler, WithAt(at))` |
-
-v2.1.0 adds these functions without requiring an import-path change.
 
 Options apply left to right, and the last value for a setting wins. `WithFixedDelay` and `WithFixedRate` each set both the scheduling mode and interval. Validation runs after all options, and the resulting configuration is immutable. Options returned by the helpers can be reused across concurrent calls; avoid mutating a shared options slice while another call reads it. Nil options return a validation error. Constructor `Option` and registration `ScheduleOption` are separate types.
 
@@ -193,13 +189,11 @@ Events are sequenced, bounded, asynchronous, and best effort; full buffers drop 
 
 ### Integrations
 
-The core starts no HTTP server. [Structured logging and HTTP readiness](examples/logging/main.go), [Prometheus](examples/prometheus/main.go), and [OpenTelemetry](examples/otel/main.go) show application integration. Cumulative metrics come from snapshots. Names/IDs belong in logs/traces, not automatic unbounded metric labels. Integrations retain no per-registration registry. Telemetry modules have independent dependencies and currently require Go 1.26+.
+The core starts no HTTP server. [Structured logging and HTTP readiness](examples/logging/main.go), [Prometheus](examples/prometheus/main.go), and [OpenTelemetry](examples/otel/main.go) show application integration. Cumulative metrics come from snapshots. Names/IDs belong in logs/traces, not automatic unbounded metric labels. Integrations retain no per-registration registry. Telemetry examples are separate Go modules; their dependencies and minimum Go versions are declared in their `go.mod` files.
 
 ## Migrating from v1
 
-Read [MIGRATION.md](MIGRATION.md) before moving v1 jobs. V2 uses `github.com/tauki/scheduledworker/v2` and lives at the repository root. V1 maintenance continues on [`release/v1`](https://github.com/tauki/scheduledworker/tree/release/v1); [v1.0.0](https://github.com/tauki/scheduledworker/tree/v1.0.0) remains available at `github.com/tauki/scheduledworker`. Both major import paths can coexist in an application.
-
-Pause/resume, business windows, occurrence jitter, keyed exclusion, custom queues/backoff, absolute registration deadlines, scheduling middleware, and reliable engine hooks have no v2.0 equivalent. Keep v1 for jobs needing those contracts.
+Read [MIGRATION.md](MIGRATION.md) for API changes, behavioral differences, and v1 features without direct v2 equivalents. V1 uses `github.com/tauki/scheduledworker`; v2 uses `github.com/tauki/scheduledworker/v2`. Both import paths can coexist in an application. The [migration example](examples/migration) demonstrates using both versions and tests the differences.
 
 ## Development
 
@@ -211,14 +205,17 @@ From this directory:
 go test ./...
 go test -race ./... -count=1
 go vet ./...
-go test -run '^$' -fuzz '^FuzzCoordinatorTransitions$' -fuzztime 10s -parallel 2
-go test -run '^$' -fuzz '^FuzzIndexedHeap$' -fuzztime 10s -parallel 2
 go run -race ./examples/logging
 ```
 
-Run `go test -race ./...`, `go vet ./...`, and `go run -race .` separately inside each migration/telemetry example module. Root-module commands exercise v2. CI covers Go 1.25, 1.26, and current stable; timed fuzzing runs on stable, while every version runs the seed corpus. Use Go 1.27+ for timed fuzzing to avoid the older toolchains' [false timeout failure](https://github.com/golang/go/issues/75804). Migration fixtures compare the root v2 module with the published v1.0.0 dependency. V1's own source and test suite remain on `release/v1`.
+Run `go test -race ./...`, `go vet ./...`, and `go run -race .` separately inside each migration/telemetry example module. Their `replace` directives use the local root scheduler. The migration module also imports released v1 for comparison.
 
-Tests use Go's `testing/synctest`, explicit barriers, a private wall/elapsed clock seam, heap properties, and fuzzed transition sequences. They cover noncooperative handlers/observers with explicit release, clock jumps, cancellation/admission races, shutdown escalation, retry fairness, exact overlap accounting, a billion missed ticks, resource bounds, terminal cleanup, and idle/saturation behavior. A clean race run is evidence for exercised paths, not proof of arbitrary application handler safety.
+Run timed fuzzing with the current stable Go toolchain, as CI does. Regular tests also execute the fuzz seed corpus.
+
+```sh
+go test -run '^$' -fuzz '^FuzzCoordinatorTransitions$' -fuzztime 10s -parallel 2
+go test -run '^$' -fuzz '^FuzzIndexedHeap$' -fuzztime 10s -parallel 2
+```
 
 ### Benchmarks
 
@@ -226,4 +223,4 @@ Tests use Go's `testing/synctest`, explicit barriers, a private wall/elapsed clo
 go test -run '^$' -bench . -benchtime=1x -count=1
 ```
 
-Initial local benchmark sample: Apple M1 Pro, darwin/arm64, Go 1.25.10, ten workers, one iteration per workload. Simultaneous short-handler bursts at 10/1,000/10,000 registrations took 0.174/7.16/69.6ms for admission through shutdown, with mean handler-entry lag 0.054/5.50/54.1ms and total allocations 64.6KB/4.68MB/46.5MB. Retained future-registration bookkeeping measured approximately 2,546/1,718/1,702 bytes per registration after GC. The benchmark advances the private elapsed clock once after admission to make all jobs due together; lag includes admission time. Slow (100µs sleep), retry, and cancellation cases are also reproducible in `benchmarks_test.go`. These single samples include runtime noise and establish no throughput/latency SLA; rerun on the deployment toolchain and hardware.
+Benchmarks cover bursts of due work, slow handlers, retries, cancellation, and memory retained by future registrations. Run them on your target Go toolchain and hardware; eligibility times do not imply a latency SLA.
