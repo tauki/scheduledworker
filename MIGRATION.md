@@ -1,119 +1,64 @@
 # Migrating from v1 to v2
 
-V2 uses `github.com/tauki/scheduledworker/v2` and requires Go 1.25 or newer. Follow the [installation instructions](README.md#installation), then update imports and translate each job's scheduling policy. V1 uses `github.com/tauki/scheduledworker`, with maintenance on [`release/v1`](https://github.com/tauki/scheduledworker/tree/release/v1).
+V2 requires Go 1.25 or newer. Follow the [installation instructions](README.md#installation) and change imports from `github.com/tauki/scheduledworker` to `github.com/tauki/scheduledworker/v2`. Both versions can coexist with separate scheduler instances; register each job with only one engine.
 
-Both import paths can coexist in one application, with separate scheduler instances. The examples below use v2's options API; `New(Config)` and `Schedule(ctx, Spec, handler)` provide the same policies through structs. Jobs must be registered explicitly with the appropriate scheduler; there is no automatic conversion of v1 options or transfer of pending jobs.
+## Update construction and submission
 
-## Construction and lifetime
-
-| V1 | V2 / required action |
-| --- | --- |
-| `Worker`, `New()`, `Start()` | Concrete `*Scheduler`, `NewWithOptions(...Option)` and `Start(ctx)` with checked errors. NewWithOptions() selects defaults. Consumers define narrow interfaces. Repeated startup is an error. |
-| `SetMaxWorker` | `WithWorkers(n)` at construction; immutable afterward. Invalid sizes return errors rather than normalizing. |
-| `SetDuration` | Removed. One next-deadline timer drives scheduling. |
-| `Submit(Task, ...TaskOpt)`, `SubmitWithOptions(Task, ...Option)` | `ScheduleWithOptions(ctx, handler, ...ScheduleOption)` after successful Start, with bounded capacity and acknowledged admission. An error guarantees no committed registration. |
-| `Task.Fn`, `Task.FnErr` | One `Handler(context.Context, RunInfo) error`. Choose one deliberately; wrapping `func()` cannot make its work cancelable. Legacy FnErr precedence disappears. |
-| `WithContext`, `Spec.Context` | Explicit application ownership and Handle.Cancel. Schedule's context controls admission only; it is not a per-registration parent. |
-| `WithDeadline`, `Spec.Deadline` | No equivalent absolute registration deadline. Per-attempt Timeout or a handler-only wrapper changes outcome/retry/recurrence semantics. |
-| `WithCancelOnStop` | No per-job flag. Graceful shutdown lets dispatched attempts return; lifetime cancellation or shutdown escalation cancels all dispatched contexts. |
-| `Pause`, `Resume`, `Status.Paused` | Unavailable. Shutdown is terminal; canceling/re-registering does not preserve paused identity, queued work, limits, or retries. Keep v1 for these jobs. |
-| `Stop`, `StopCtx`, `StopMode`, `Drain`, `Abort` | `Shutdown(ctx)` abandons undispatched work and waits for dispatched attempts. Any expired caller escalates shared cancellation, rather than only limiting that caller's wait. |
-
-Shutdown never waits for a future due date. An undispatched one-shot finishes with SchedulerStopped and no run outcome. A dispatched attempt records its actual outcome, while the schedule reason is SchedulerStopped. Waiting for a known finite batch before shutdown is application policy; it is not a general drain adapter. Unlimited recurring handles do not naturally finish.
-
-Use a background lifetime context plus an application-owned bounded Shutdown when graceful termination is desired. Passing a signal context directly to Start requests immediate cancellation when the signal fires. Canceling an admission context after success does not cancel the registration. Canceling Wait only ends that wait. Handle.Cancel acknowledges removal of future dispatch, retains capacity until active work returns, and is safe to request inside a handler. Lifecycle waits belong outside handlers/observers.
-
-Per-job watcher goroutines add application overhead beyond the scheduler's bounded goroutine count. A derived handler context alone does not terminate the registration. Applications requiring v1 parent/deadline semantics should keep those jobs on v1 until their ownership model is explicitly redesigned.
-
-## Scheduling and counts
-
-| Resolved v1 intent | V2 scheduling options |
-| --- | --- |
-| One-shot with Repeat 0 or 1 and no interval | Omit interval options; use WithAt for an explicit time. Zero/omitted time is immediate. |
-| Unlimited positive interval | `WithFixedDelay(d)`; omit WithMaxRuns. |
-| Finite positive interval, n > 0 | `WithFixedDelay(d), WithMaxRuns(uint64(n))` after validating n. |
-| Fixed rate | `WithFixedRate(d)` with optional count; BufferLatest is default, WithOverlap(SkipOverlap) is an explicit alternative. |
-| `Every(d), Repeat(0)` | One delayed Once; resolve intended At as admission + d when no explicit At exists. Recurring MaxRuns 0 would incorrectly mean unlimited. |
-| `Repeat(n > 1)` without Every | Unsupported. V2 rejects recurring zero intervals. A handler loop or multiple one-shots changes identities, ordering, cancellation, retry, and accounting. |
-
-V1 options apply left to right: `WithRepeat(0), WithEvery(d)` becomes unlimited, while the reverse order becomes one delayed invocation. Translate the final intent rather than copying option names/numeric values. `RepeatForever`/`Forever` (-1) maps to recurring MaxRuns 0; other negative counts are invalid. Task.At's precedence over Spec.At must be resolved explicitly when converting existing code. `Until` zero remains unbounded.
+- Replace `Worker` and `New().Start()` with `NewWithOptions(...)`, then `Start(ctx)`. Both return errors that must be checked. The concrete type is `*Scheduler`.
+- Replace `SetMaxWorker` with `WithWorkers(n)` and set admission capacity with `WithMaxSchedules(n)`. Configuration is fixed at construction. Remove `SetDuration`; v2 needs no polling interval.
+- Replace `Submit` / `SubmitWithOptions` with `ScheduleWithOptions(ctx, handler, ...)`. Handle admission errors, including `ErrCapacity`, and retain the returned handle for cancellation or results. V1 options cannot be reused directly.
+- Replace `Task.Fn` / `Task.FnErr` with `Handler(context.Context, RunInfo) error`. Handlers must cooperate with cancellation.
 
 ```go
-// V1: final intent is three fixed-delay occurrences, each up to three attempts.
+// V1: three occurrences, each with up to three attempts.
 err := w.SubmitWithOptions(v1.Task{FnErr: refresh},
     v1.WithEvery(30*time.Second), v1.WithRepeat(3),
     v1.WithRetry(v1.RetryPolicy{MaxAttempts: 3}))
 
-// V2: after checking NewWithOptions and Start errors.
-h, err := s.ScheduleWithOptions(admissionCtx,
-    func(ctx context.Context, run v2.RunInfo) error { return refresh(ctx) },
+// V2: after constructing and starting s.
+h, err := s.ScheduleWithOptions(ctx,
+    func(ctx context.Context, _ v2.RunInfo) error { return refresh(ctx) },
     v2.WithFixedDelay(30*time.Second), v2.WithMaxRuns(3),
     v2.WithRetry(v2.RetryPolicy{MaxAttempts: 3}))
 ```
 
-V2 options apply left to right, and the last value for each setting wins. WithFixedDelay and WithFixedRate each replace the mode and interval. Validation happens after all options. Constructor Option and ScheduleOption are distinct; v1 option types cannot be passed to either.
+`New(Config)` and `Schedule(ctx, Spec, handler)` are also available for struct-based configuration. See the [quick start](README.md#quick-start) for complete startup, result handling, and shutdown.
 
-Both versions count total retry attempts, count failed runs against finite limits, and default the first interval run to admission time plus the interval when At is zero. Positive limits bound actual first dispatches, not guaranteed executions before cancellation/shutdown. Use v2.WithAt(time.Now()) for an immediate first v2 interval; resolve v1 At explicitly as before.
+## Translate scheduling intent
 
-Fixed delay starts after the final attempt returns, for every terminal outcome. Fixed rate anchors nominal times and never self-overlaps, including retry waiting. Under global saturation, v2 refreshes a ready occurrence to the latest eligible tick immediately before dispatch. Ready positions are preserved by coalescing; new eligibility and retries join the FIFO tail. V2 promises equal-eligibility admission order; v1 makes no equal-time ordering promise.
-
-Until changes from v1 transformed/retry eligibility to an inclusive v2 nominal occurrence bound. With first nominal t=10, Until t=12, and retry eligibility t=15, v1 excludes the retry; v2 permits it within the attempt budget. Both can dispatch an already-eligible in-window occurrence after t=12 when a slot becomes available. V2 rejects initial nominal times beyond Until with ErrInvalidSpec; v1 can silently drop them (including extended submission returning nil). Neither cutoff is a latest-start/latest-finish deadline. Jitter/window transformations in v1 also affect eligibility before its cutoff checks.
-
-## Execution outcomes
-
-| V1 | V2 / change |
+| V1 intent | V2 options |
 | --- | --- |
-| `RetryPolicy`, `WithRetry`, `ExponentialBackoff` | Fixed-data RetryPolicy. MaxAttempts remains total attempts. Capped exponential full jitter replaces arbitrary factor/backoff callbacks, custom zero-delay policy, helper ±20% jitter, and optional panic retry. |
-| Error classification | Ordinary errors retry within budget; `Permanent(err)` preserves the error chain and prevents retry. |
-| `PanicError` | Match the type from the correct major import. Stack changes from `[]byte` to `string`, capped at 16 KiB. Panics never retry in v2. |
-| `WithTimeout` | WithTimeout retains capacity until return; v2 records TimedOut even on nil return after expiry. V1's nil return counts success. |
-| Task.At during retries, Spec.Attempt | RunInfo adds ScheduleID, stable RunID/Number/ScheduledAt, and Attempt. Retries do not overwrite nominal ScheduledAt. |
-| Spec/NewSpec, Option/OptionFunc, Task.Spec | ScheduleWithOptions applies helpers before admission; Schedule accepts a copied Spec. RunInfo, snapshots and results describe immutable scheduler-owned state. No mutable live task/plugin surface. |
-| `ErrStopped`, `ErrInvalidTask`, `ErrNextCalledTwice` | ErrStopped; separate ErrInvalidConfig/Spec/Argument plus capacity/lifecycle sentinels. Continuation misuse disappears with scheduling middleware. Use errors.Is. |
+| One-shot | Omit interval options; use `WithAt(at)` for an explicit time. |
+| Unlimited interval (`RepeatForever` / `Forever`) | `WithFixedDelay(d)` with no run limit. |
+| Finite interval, positive count `n` | `WithFixedDelay(d), WithMaxRuns(uint64(n))`; validate `n` before conversion. |
+| Fixed rate | `WithFixedRate(d)`; choose `WithOverlap(SkipOverlap)` if missed ticks should be skipped while a run is open. The default is `BufferLatest`. |
+| `Every(d), Repeat(0)` | One delayed one-shot with `WithAt(at)`; resolve `at` from an explicit time or admission time + `d`. Recurring `WithMaxRuns(0)` means unlimited. |
+| `Repeat(n > 1)` without an interval | No equivalent; recurring intervals must be positive. |
 
-At return, panic wins over control cancellation, which wins over timeout, then returned error, then success. Context outcome errors match context.Canceled/DeadlineExceeded and preserve distinct handler errors. A nil-returning handler may have performed effects before being classified canceled/timed out. Cancellation during retry waiting preserves the previous attempt error in the canceled run result without a fictitious additional attempt. Retrying a timed-out noncooperative handler waits for its actual return first.
+V1 option order can change the intended count: `WithRepeat(0), WithEvery(d)` means unlimited, while the reverse means one delayed invocation. Translate the resolved policy. Resolve `Task.At` versus `Spec.At` explicitly.
 
-## Features without direct equivalents
+Both versions delay the first interval run by the interval when `At` is zero. Use `WithAt(time.Now())` for an immediate first run. Failed runs count toward `WithMaxRuns`; retries belong to that run. Runs within one schedule never overlap.
 
-The following v1 policies have no direct v2 equivalent. Handler wrappers can change scheduling, capacity, or accounting semantics.
+## Update cancellation and shutdown
 
-| V1 surface | V2 disposition |
-| --- | --- |
-| `WithJitter` | No occurrence jitter. Retry jitter is a different policy. |
-| `WithBusinessHours` | No daily timezone window, weekends/DST processing, or calendar scheduling. A handler skipping outside hours still consumes a run; a self-resubmitting chain changes registration/admission/identity. |
-| `WithKeyLock` | No cross-registration key arbitration. A handler mutex occupies workers while waiting and can starve other keys. V1 arbitration happens before dispatch within one worker, not globally across processes. |
-| Queue/PriorityQueue/NewPriorityQueue/SetQueue | No public queue plugin, transfer, prefilled queue, or custom ordering. |
-| Interceptor/Next, WithOnEnqueue/WithOnReschedule | No scheduling-mutating middleware. A handler filter still consumes a dispatch/run. |
-| WithLabels/WithAttributes, Spec.Labels/Attrs/Key | Immutable application-owned closure data and instrumentation. Name/IDs provide correlation, without engine-carried metadata maps. |
-| Pause/Resume | No reversible dispatch gate. Retain v1 if required. |
+- The context passed to `Start` owns the scheduler lifetime. For graceful shutdown, start with a background context and call `Shutdown` with a fresh bounded context when termination is requested. A signal context passed directly to `Start` cancels dispatched work when signaled.
+- The context passed to scheduling controls admission only. Replace v1 per-job parent-context ownership with explicit `Handle.Cancel(ctx)`. Canceling `Handle.Wait(ctx)` only ends the wait.
+- Replace `Stop` / `StopCtx` with `Shutdown(ctx)`. Shutdown abandons undispatched work, including future jobs, and waits for dispatched attempts. It does not drain future due dates. Wait for finite handles first if those jobs must finish.
+- Expiration of any shutdown caller cancels dispatched execution and observation. Handlers retain worker slots until they return; cancellation cannot forcibly stop them. Shutdown is permanent, and lifecycle waits must happen outside handlers and observers.
 
-## Hooks, metrics and adapters
+## Review retries and results
 
-`WithOnRun` can become an application handler decorator for synchronous invocation work. Reliable v1 start/completion/error/panic hooks and metrics callbacks have no transparent Observer equivalent: v2 events are lossy, and decorators cannot reliably see coordinator-final timeout/cancellation classification or scheduling policy decisions. Keep reliable business work in the handler with explicit errors/idempotency. Observers should log/sample; final results and snapshots own authoritative state.
+- `RetryPolicy.MaxAttempts` still includes the first attempt. Custom backoff callbacks become `InitialBackoff` and `MaxBackoff`, using capped exponential full jitter. Panics never retry; use `Permanent(err)` for non-retryable errors. Match `PanicError` from the v2 import; its `Stack` is a string.
+- `WithUntil` now bounds nominal occurrence times inclusively, not retries. An occurrence scheduled at or before the cutoff may retry afterward. Use `WithTimeout` for a cooperative per-attempt limit; v1 absolute registration deadlines have no direct equivalent.
+- A handler returning `nil` after its timeout is classified as `TimedOut`, rather than successful. Cancellation and timeout can take precedence over a returned error.
+- `Handle.Wait` returns a final `Result` even when execution failed. Inspect `LastRun.Outcome` and `LastRun.Err`; a nil wait error does not mean the job succeeded. Use `errors.Is` with the v2 error sentinels.
 
-| V1 signal/helper | V2 migration |
-| --- | --- |
-| Scheduled/IncScheduled | V1 queue insertions include retries/recurrence; v2 Accepted counts registrations. Rename/review dashboards. |
-| Started/Completed/Failed/Panicked | V1 attempt units, with panic separate from failed. Use AttemptsDispatched/AttemptsFailed/AttemptsPanicked; v2 failed attempts include timeout/panic, exclude cancellation. RunsSucceeded/Failed/Canceled are separate terminal-run units. |
-| QueueLen/NextDue | Distinct ActiveSchedules/ReadySchedules/WaitingRetries/BufferedSchedules/NextWakeAt. No promised reconstruction of v1 queue length. |
-| InFlight | RunningAttempts, retained until actual return/completion processing. |
-| Dropped/CallbackPanicked | Review abandonment reasons separately from EventsDropped/ObserverPanics; units and coverage differ. |
-| MetricsCollector/MetricsFuncs/WithMetrics | Snapshot-driven adapters for cumulative counters/gauges; best-effort event histograms or invocation decorators with documented visibility. |
-| AddQueueObserver/StartQueueLengthSampler | Poll snapshots under application lifecycle; no synchronous queue-mutation callback guarantee. |
-| NewStatusHandler/NewHealthHandler | Application HTTP adapters around snapshots. Running with future jobs or a busy pool is normal; readiness follows lifecycle/admission. |
-| Wait/run timings | Monotonic event Lag (first dispatch) and Duration (handler invocation); samples can drop. Do not subtract reported wall timestamps across clock adjustments. |
+## Check features and instrumentation
 
-Names/IDs can be logged/traced, not automatically exported as unbounded metric labels. If an application adds a ScheduleID registry, bound its retention and clean up through authoritative handle ownership. A dropped ScheduleFinished event cannot be the only cleanup trigger. The first invocation/event can race the caller storing its handle; define missing correlation behavior. Included adapters use no per-ID registry and unregister their instrumentation explicitly.
+Keep jobs on v1 or redesign their policy if they require pause/resume, occurrence jitter, business-hour windows, keyed exclusion, custom queues, or scheduling middleware. Handler wrappers can change worker usage, run counts, and cancellation behavior.
 
-## Migration example
+Move labels and attributes into application-owned closures or instrumentation. Replace built-in health/status handlers and metrics collectors with adapters around `Scheduler.Status()` and `Handle.Status()`. Use snapshots for counters and final results; observer events are best effort and cannot replace reliable business hooks or cleanup.
 
-The [migration example](examples/migration/main.go) imports both versions with separate aliases and scheduler instances. It demonstrates v1 submission and shutdown alongside v2 scheduling, result waiting, and shutdown. It uses harmless test handlers; register each business job with only one scheduler to avoid duplicate effects.
+Review dashboard units: `Accepted` counts registrations, not retry/recurrence enqueues. Attempt counters and run counters are separate; `AttemptsFailed` includes timeout and panic but excludes cancellation. See the [observability guide](README.md#observability) and [integration examples](README.md#integrations).
 
-Its [tests](examples/migration/migration_test.go) compare interval defaults, option ordering, shutdown, cutoff/retry behavior, and timeout outcomes. The example is a separate Go module that uses released v1 and the local root v2 module.
-
-```sh
-cd examples/migration
-go run -race .
-go test -race ./...
-go vet ./...
-```
+The [migration example and tests](examples/migration) demonstrate both APIs and compare interval defaults, shutdown, retries, and timeout outcomes.
