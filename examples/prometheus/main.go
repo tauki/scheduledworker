@@ -1,54 +1,55 @@
 package main
 
 import (
+	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"time"
 
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	sw "github.com/tauki/scheduledworker"
+	sw "github.com/tauki/scheduledworker/v2"
 )
 
-func run() error {
-	w := sw.New().Start()
-	defer w.Stop()
-	registry := prom.NewRegistry()
-	counter := func(name string) prom.Counter {
-		c := prom.NewCounter(prom.CounterOpts{Name: "scheduledworker_" + name + "_total", Help: "Scheduler attempt and admission counters."})
-		registry.MustRegister(c)
-		return c
-	}
-	scheduled, started, completed, failed, panicked := counter("scheduled"), counter("started"), counter("completed"), counter("failed"), counter("panicked")
-	wait := prom.NewHistogram(prom.HistogramOpts{Name: "scheduledworker_wait_seconds", Help: "Eligibility-to-start delay."})
-	duration := prom.NewHistogram(prom.HistogramOpts{Name: "scheduledworker_run_seconds", Help: "Attempt duration."})
-	registry.MustRegister(wait, duration, prom.NewGaugeFunc(prom.GaugeOpts{Name: "scheduledworker_queue_length", Help: "Current queued entries."}, func() float64 { return float64(w.Status().QueueLen) }))
-	metrics := sw.MetricsFuncs{
-		Scheduled: scheduled.Inc, Started: started.Inc, Completed: completed.Inc, Failed: failed.Inc, Panicked: panicked.Inc,
-		Wait: func(d time.Duration) { wait.Observe(d.Seconds()) }, Run: func(d time.Duration) { duration.Observe(d.Seconds()) },
-	}
-	if err := w.SubmitWithOptions(sw.Task{Fn: func() {}}, sw.WithMetrics(metrics)); err != nil {
-		return err
-	}
-	w.Stop()
-	mux := http.NewServeMux()
-	mux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-	mux.Handle("/status", sw.NewStatusHandler(w))
-	mux.Handle("/healthz", sw.NewHealthHandler(w))
-	// Exercise a real scrape handler without starting a long-running server.
-	response := httptest.NewRecorder()
-	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "scheduledworker_completed_total 1") {
-		return fmt.Errorf("unexpected scrape: %s", response.Body.String())
-	}
-	fmt.Println("Prometheus scrape: completed_total = 1")
-	return nil
+// Pull cumulative counters from authoritative snapshots. Best-effort observer
+// events are suitable for sampled histograms, not authoritative counter totals.
+type collector struct {
+	scheduler                 *sw.Scheduler
+	succeeded, failed, active *prom.Desc
+}
+
+func (c collector) Describe(ch chan<- *prom.Desc) { ch <- c.succeeded; ch <- c.failed; ch <- c.active }
+func (c collector) Collect(ch chan<- prom.Metric) {
+	s := c.scheduler.Status()
+	ch <- prom.MustNewConstMetric(c.succeeded, prom.CounterValue, float64(s.Counters.RunsSucceeded))
+	ch <- prom.MustNewConstMetric(c.failed, prom.CounterValue, float64(s.Counters.AttemptsFailed))
+	ch <- prom.MustNewConstMetric(c.active, prom.GaugeValue, float64(s.ActiveSchedules))
 }
 func main() {
-	if err := run(); err != nil {
-		log.Fatal(err)
+	s, err := sw.NewWithOptions()
+	if err != nil {
+		panic(err)
 	}
+	if err = s.Start(context.Background()); err != nil {
+		panic(err)
+	}
+	registry := prom.NewRegistry()
+	registry.MustRegister(collector{s, prom.NewDesc("scheduledworker_v2_runs_succeeded_total", "Terminal successful runs.", nil, nil), prom.NewDesc("scheduledworker_v2_attempts_failed_total", "Failed attempts including timeout and panic; excluding cancellation.", nil, nil), prom.NewDesc("scheduledworker_v2_active_schedules", "Retained registrations, including canceling handlers.", nil, nil)})
+	h, err := s.ScheduleWithOptions(context.Background(), func(context.Context, sw.RunInfo) error { return nil })
+	if err != nil {
+		panic(err)
+	}
+	if _, err = h.Wait(context.Background()); err != nil {
+		panic(err)
+	}
+	if err = s.Shutdown(context.Background()); err != nil {
+		panic(err)
+	}
+	response := httptest.NewRecorder()
+	promhttp.HandlerFor(registry, promhttp.HandlerOpts{}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if response.Code != 200 || !strings.Contains(response.Body.String(), "scheduledworker_v2_runs_succeeded_total 1") {
+		panic(response.Body.String())
+	}
+	fmt.Println("Prometheus: authoritative runs_succeeded_total = 1")
 }

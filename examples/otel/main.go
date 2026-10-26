@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
-	"time"
 
-	sw "github.com/tauki/scheduledworker"
+	sw "github.com/tauki/scheduledworker/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
@@ -17,73 +15,78 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-func metrics(meter metric.Meter) (sw.MetricsCollector, error) {
-	counters := make([]metric.Int64Counter, 5)
-	for i, name := range []string{"scheduled", "started", "completed", "failed", "panicked"} {
-		counter, err := meter.Int64Counter("scheduledworker." + name)
-		if err != nil {
-			return nil, err
-		}
-		counters[i] = counter
-	}
-	wait, err := meter.Float64Histogram("scheduledworker.wait", metric.WithUnit("s"))
-	if err != nil {
-		return nil, err
-	}
-	duration, err := meter.Float64Histogram("scheduledworker.run", metric.WithUnit("s"))
-	if err != nil {
-		return nil, err
-	}
+func main() {
 	ctx := context.Background()
-	return sw.MetricsFuncs{
-		Scheduled: func() { counters[0].Add(ctx, 1) }, Started: func() { counters[1].Add(ctx, 1) }, Completed: func() { counters[2].Add(ctx, 1) }, Failed: func() { counters[3].Add(ctx, 1) }, Panicked: func() { counters[4].Add(ctx, 1) },
-		Wait: func(d time.Duration) { wait.Record(ctx, d.Seconds()) }, Run: func(d time.Duration) { duration.Record(ctx, d.Seconds()) },
-	}, nil
-}
-func run() error {
-	ctx := context.Background()
-	exporter, err := stdouttrace.New(stdouttrace.WithPrettyPrint())
+	exporter, err := stdouttrace.New()
 	if err != nil {
-		return err
+		panic(err)
 	}
-	tracing := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
-	defer func() { _ = tracing.Shutdown(ctx) }()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+	defer tp.Shutdown(ctx)
 	reader := sdkmetric.NewManualReader()
-	metering := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	defer func() { _ = metering.Shutdown(ctx) }()
-	collector, err := metrics(metering.Meter("scheduledworker-example"))
+	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	defer mp.Shutdown(ctx)
+	s, err := sw.NewWithOptions()
 	if err != nil {
-		return err
+		panic(err)
 	}
-	tracer := tracing.Tracer("scheduledworker-example")
-	middleware := sw.WithOnRun(func(ctx context.Context, task *sw.Task, next sw.Next) error {
-		ctx, span := tracer.Start(ctx, "scheduled task", trace.WithAttributes(attribute.Int("attempt", task.Spec().Attempt)))
+	if err = s.Start(ctx); err != nil {
+		panic(err)
+	}
+	meter := mp.Meter("scheduledworker-v2-example")
+	succeeded, err := meter.Int64ObservableCounter("scheduledworker.v2.runs.succeeded")
+	if err != nil {
+		panic(err)
+	}
+	registration, err := meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
+		o.ObserveInt64(succeeded, int64(s.Status().Counters.RunsSucceeded))
+		return nil
+	}, succeeded)
+	if err != nil {
+		panic(err)
+	}
+	defer registration.Unregister()
+	tracer := tp.Tracer("scheduledworker-v2-example")
+	work := func(context.Context, sw.RunInfo) error { return nil }
+	// A handler decorator observes invocation, not coordinator-final outcomes.
+	// Metadata is immutable application-owned data; no per-ID registry is retained.
+	h, err := s.ScheduleWithOptions(ctx, func(ctx context.Context, r sw.RunInfo) error {
+		ctx, span := tracer.Start(ctx, "refresh", trace.WithAttributes(attribute.String("schedule.id", string(r.ScheduleID)), attribute.String("run.id", string(r.RunID)), attribute.Int("attempt", r.Attempt)))
 		defer span.End()
-		err := next(ctx, task)
+		err := work(ctx, r)
 		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		}
 		return err
-	})
-	w := sw.New().Start()
-	defer w.Stop()
-	if err := w.SubmitWithOptions(sw.Task{FnErr: func(context.Context) error { return nil }}, middleware, sw.WithMetrics(collector)); err != nil {
-		return err
+	}, sw.WithName("refresh"))
+	if err != nil {
+		panic(err)
 	}
-	w.Stop()
-	var snapshot metricdata.ResourceMetrics
-	if err := reader.Collect(ctx, &snapshot); err != nil {
-		return err
+	if _, err = h.Wait(ctx); err != nil {
+		panic(err)
 	}
-	if len(snapshot.ScopeMetrics) == 0 {
-		return fmt.Errorf("no scheduler metrics collected")
+	if err = s.Shutdown(ctx); err != nil {
+		panic(err)
 	}
-	fmt.Println("OpenTelemetry: span exported and scheduler metrics collected")
-	return nil
-}
-func main() {
-	if err := run(); err != nil {
-		log.Fatal(err)
+	var data metricdata.ResourceMetrics
+	if err = reader.Collect(ctx, &data); err != nil {
+		panic(err)
 	}
+	found := false
+	for _, scope := range data.ScopeMetrics {
+		for _, m := range scope.Metrics {
+			if sum, ok := m.Data.(metricdata.Sum[int64]); ok {
+				for _, p := range sum.DataPoints {
+					if p.Value == 1 {
+						found = true
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		panic("authoritative run counter missing")
+	}
+	fmt.Println("OpenTelemetry: invocation span and authoritative run counter exported")
 }

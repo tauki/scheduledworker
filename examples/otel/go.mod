@@ -1,9 +1,9 @@
-module github.com/tauki/scheduledworker/examples/otel
+module github.com/tauki/scheduledworker/v2/examples/otel
 
 go 1.26.0
 
 require (
-	github.com/tauki/scheduledworker v0.9.0
+	github.com/tauki/scheduledworker/v2 v2.0.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.47.0
 	go.opentelemetry.io/otel/metric v1.47.0
@@ -22,4 +22,4 @@ require (
 	golang.org/x/sys v0.48.0 // indirect
 )
 
-replace github.com/tauki/scheduledworker => ../..
+replace github.com/tauki/scheduledworker/v2 => ../..

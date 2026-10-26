@@ -1,25 +1,26 @@
-// Package scheduledworker provides process-local one-shot, fixed-delay and fixed-rate
-// function scheduling. It limits concurrent invocations and drains queued tasks
-// on Stop. Queued work is held in memory and is lost when the process exits.
+// Package scheduledworker provides bounded, in-memory scheduling for one-shot,
+// fixed-delay, and fixed-rate work within one Go process.
 //
-// Recurring functions run serially within their registration, with the next
-// interval measured after completion or panic for fixed-delay work. Extended
-// options add bounded retries, context-aware handlers, middleware and observation.
-// Panics are recovered; optional hooks report failures and panics.
-// Distinct registrations can run concurrently, even if they use the same Fn.
+// Construct with NewWithOptions or New, call Start, then register work with
+// ScheduleWithOptions or Schedule. Defaults are 10 workers and 10,000 schedule
+// slots; scheduling without options requests one immediate run. Retain Handles
+// to cancel schedules or inspect results. Runs within a schedule never overlap,
+// including retries. Handlers must implement any required business idempotency.
 //
-// Pause suspends new dispatch while retaining queued work and accepting new
-// submissions. Already-dispatched invocations continue. Resume permits dispatch
-// at the original eligibility times; neither method starts a never-started worker.
-// Start remains idempotent and does not implicitly resume a paused worker.
+// Start's context owns the scheduler lifetime. Scheduling contexts control
+// admission only; use Handle.Cancel to cancel accepted work. Cancellation and
+// timeouts are cooperative: a handler retains its worker slot until it returns
+// or panics.
 //
-// Stop closes admission and prevents further repeats/retries, but drains work
-// already queued at its scheduled times, overriding Pause. WithCancelOnStop
-// requests cooperative context cancellation for opted-in tasks; other tasks
-// continue normally.
-// Call Stop or StopCtx from the owning application; calling either inside an
-// executing function can wait on itself. StopCtx can discard queued work and
-// bound the caller's wait. Context cancellation never kills a function or releases
-// its execution slot before it returns. A context-aware handler must return an
-// error to report cancellation or timeout as a failure.
+// Shutdown abandons undispatched work and waits for dispatched attempts and
+// observation. Expiration of any shutdown caller cancels outstanding execution
+// and observation. Done closes when all owned goroutines exit; an uncooperative
+// handler or observer can prevent termination. Lifecycle waits belong outside
+// handlers and observers. Stopped schedulers cannot restart. Schedulers must not
+// be copied.
+//
+// Status snapshots and final handle results are authoritative within the process.
+// Observer events are asynchronous and best effort; use them for diagnostics,
+// not reliable business actions or cleanup. Work is not persisted, and separate
+// scheduler instances do not coordinate.
 package scheduledworker
