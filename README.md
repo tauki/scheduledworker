@@ -144,27 +144,34 @@ For graceful application shutdown, start with `context.Background()` and call `S
 
 ### Resource bounds
 
-The coordinator owns mutable registrations, an indexed deadline heap, and a FIFO ready list. Handler execution runs separately from scheduling. A running scheduler owns `Workers` worker goroutines, one coordinator, and optionally one observer dispatcher. There is no goroutine per registration, delayed retry, or tick. At most `MaxSchedules` registrations are retained, `Workers` attempts dispatched, and one open run plus one buffered occurrence per registration. Canceled registrations retain admission capacity until dispatched work actually returns. Each registration embeds at most two timer nodes and one ready entry; removal leaves no timer tombstones. Handler closures and errors can retain application memory beyond these bookkeeping bounds.
+A scheduler retains at most `MaxSchedules` registrations and dispatches at most `Workers` attempts at a time. Each schedule has at most one open run and one buffered occurrence. Canceled registrations retain capacity until dispatched work returns. Goroutine count is bounded by the configured workers plus scheduling and optional observation; it does not grow with registrations or retries. Handlers and errors can retain additional application memory.
 
 ### Timing and overlap
 
-An eligibility time is a lower bound, with no latency SLA. Explicit wall timestamps resolve once onto an elapsed-time timeline. Later wall-clock jumps change actual event/finish timestamps but do not retarget existing schedules, cutoffs, or nominal reporting. Equal eligibility uses admission order; simultaneous completion/tick ordering follows coordinator event order. Ready entries keep position when coalesced, while newly eligible retries join the tail. A dispatch invokes its handler at most once, but retries can repeat business effects.
+An eligibility time is a lower bound, with no latency SLA. Explicit wall timestamps resolve once onto an elapsed-time timeline. Later wall-clock jumps do not retarget existing schedules or cutoffs. Equally eligible work uses admission order. A dispatch invokes its handler at most once, but retries can repeat business effects.
 
-Fixed delay calculates the next nominal time from the worker's terminal return time, after the final retry, for success, failure, timeout, or panic. A failed run never silently deletes recurrence. Fixed rate keeps its original anchor. While a run is open, BufferLatest keeps the latest due occurrence and counts replaced ones as coalesced; SkipOverlap discards and counts due ticks. Under global saturation, either policy retains the latest due tick and coalesces older ones. Refresh occurs immediately before dispatch. Missed-tick arithmetic is constant time. For a five-second schedule blocked from t=0 to t=16, BufferLatest keeps t=15 and coalesces t=5/t=10; SkipOverlap discards all three and next runs at t=20.
+Fixed delay calculates the next nominal time after the previous run's final attempt returns, including after failure, timeout, or panic. Fixed rate keeps its original anchor. While a run is open, including retry waits, `BufferLatest` retains the latest due occurrence and `SkipOverlap` discards due occurrences.
+
+For example, suppose a fixed-rate schedule is due every five seconds, and its first run starts at t=0 and returns at t=16:
+
+- `BufferLatest` retains the t=15 occurrence and counts t=5 and t=10 as coalesced.
+- `SkipOverlap` skips t=5, t=10, and t=15; its next nominal occurrence is t=20.
+
+Waiting for a worker is different. If other schedules occupy all workers from t=0 to t=16 and this schedule has not started, both policies retain t=15 and coalesce t=0, t=5, and t=10. These are nominal occurrence times, not promised execution times.
 
 ### Retries and outcomes
 
-Retries preserve RunID, Number, and ScheduledAt, increment Attempt, and rejoin the common queue. After failed attempt a, full jitter chooses `[0, min(MaxBackoff, InitialBackoff*2^(a-1))]` with overflow-safe capping. `Permanent(err)` preserves `errors.Is`/`errors.As` and prevents retry; `Permanent(nil)` is nil. Error-chain inspection runs on the worker and retains its slot; application `As`/`Unwrap` methods must return, and their panics receive the same recovery as handler panics. Recovered panics expose `*PanicError`, capture at most 16 KiB of stack, and never retry. Outcome precedence at return: panic, control cancellation, timeout, returned error, success. Timeout/cancellation errors match the corresponding context error and preserve a distinct handler error. Canceling during backoff produces one canceled run result preserving the failed attempt error, without inventing another attempt.
+Retries preserve `RunID`, `Number`, and `ScheduledAt`, and increment `Attempt`. Delays use capped exponential full jitter. `Permanent(err)` preserves the error chain and prevents retry. Recovered panics expose `*PanicError` and never retry. Outcome precedence at return is panic, control cancellation, timeout, returned error, then success. Timeout/cancellation errors match the corresponding context error and preserve a distinct handler error. Cancellation during backoff preserves the previous attempt's error without counting another attempt.
 
 `RunLimitReached` wins over `UntilReached` when both natural limits apply. A one-shot uses `OneShotFinished` for any execution outcome. The first acknowledged explicit cancellation or scheduler stop fixes the termination reason; later requests do not replace it. A finished result never changes. Finish reason and last-run outcome describe different facts.
 
 ### Admission and cancellation
 
-Before command handoff, request cancellation can prevent admission/cancellation. After handoff the coordinator checks the context before committing, then always acknowledges. A returned registration error guarantees no registration was committed. Admission can succeed just after caller cancellation if commitment won that race. After Cancel acknowledges, no new attempt can dispatch; an earlier handoff may still enter with a canceled context.
+A returned scheduling error guarantees no registration was committed. Admission can succeed just after caller cancellation if commitment won that race; use the returned handle to cancel accepted work. After `Cancel` acknowledges, no new attempt can dispatch, though a previously dispatched handler may still enter with a canceled context.
 
 ### Shutdown
 
-Shutdown rejects admission, prevents further handoffs, abandons undispatched work with `SchedulerStopped`, removes retry waits, and lets dispatched attempts return. Lifetime cancellation or any expired Shutdown context cancels all dispatched execution and observation. Cleanup continues after a waiting caller returns. Other Shutdown callers can keep waiting. A never-started scheduler stops directly. Stopped instances cannot restart. A noncooperative handler/observer can prevent Done from closing; no replacement goroutines hide that work. Do not wait for shutdown or the current handle inside its own handler/observer. `runtime.Goexit`, process exits, and unmanaged goroutine panics are outside execution guarantees.
+Shutdown rejects new schedules, abandons undispatched work with `SchedulerStopped`, and lets dispatched attempts return. Lifetime cancellation or any expired shutdown context cancels dispatched execution and observation. Cleanup continues after a waiting caller returns; other callers can keep waiting. Stopped instances cannot restart. A noncooperative handler or observer can prevent `Done()` from closing. Do not wait for shutdown or the current handle inside its own handler/observer. `runtime.Goexit`, process exits, and unmanaged goroutine panics are outside execution guarantees.
 
 ## Observability
 
@@ -179,7 +186,7 @@ Use status snapshots for metrics and health checks, and observer events for diag
 
 ### Snapshots and counters
 
-Scheduler and handle snapshots are individually consistent, but are not an atomic pair. `CurrentRun` persists through execution and retry waiting/ready states. `NextScheduledAt` is the earliest retained nominal occurrence, including a buffered one; it is distinct from retry eligibility. `NextAttemptAt` reports pending first/retry eligibility, including past eligibility in Ready; it is zero while executing. Ready retries contribute to ReadySchedules, not WaitingRetries. RunningAttempts includes every dispatched attempt until its completion is processed.
+Scheduler and handle snapshots are individually consistent, but are not an atomic pair. The [status types](types.go) document the meaning of each field, including nominal occurrence times, attempt eligibility, and running counts.
 
 Counters distinguish runs from attempts. AttemptsFailed includes timeout/panic, excludes control cancellation. For example, one failed attempt followed by a successful retry produces one successful run, two dispatched attempts, and one failed attempt. Suppressed ticks count as occurrences; Accepted counts committed registrations. Rejected counts coordinator-rejected admission transactions; validation and cancellation before handoff are caller-local and do not enter that counter. Only the latest terminal run is retained.
 
@@ -189,7 +196,7 @@ Events are sequenced, bounded, asynchronous, and best effort; full buffers drop 
 
 ### Integrations
 
-The core starts no HTTP server. [Structured logging and HTTP readiness](examples/logging/main.go), [Prometheus](examples/prometheus/main.go), and [OpenTelemetry](examples/otel/main.go) show application integration. Cumulative metrics come from snapshots. Names/IDs belong in logs/traces, not automatic unbounded metric labels. Integrations retain no per-registration registry. Telemetry examples are separate Go modules; their dependencies and minimum Go versions are declared in their `go.mod` files.
+The core starts no HTTP server. [Structured logging and HTTP readiness](examples/logging/main.go), [Prometheus](examples/prometheus/main.go), and [OpenTelemetry](examples/otel/main.go) show application integration. Cumulative metrics come from snapshots. Names/IDs belong in logs/traces, not automatic unbounded metric labels. Telemetry examples are separate Go modules; their dependencies and minimum Go versions are declared in their `go.mod` files.
 
 ## Migrating from v1
 
